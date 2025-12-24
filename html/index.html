@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Phantom Flow – Basic Viz</title>
+  <title>Phantom Flow – U-raskrsnica s rampom</title>
   <style>
     body {
       margin: 0;
@@ -29,13 +29,14 @@
 
     canvas {
       border: 1px solid #333;
-      background: #000;
+      background: #000; /* sve ćemo crtati u JS-u */
     }
   </style>
 </head>
 <body>
-  <h1>Phantom Flow – ring + on-ramp</h1>
-  <canvas id="simCanvas" width="800" height="800"></canvas>
+  <h1>Phantom Flow – U-raskrsnica s rampom</h1>
+  <div id="info">IDM + MOBIL, 3 trake + ulazna rampa</div>
+  <canvas id="simCanvas" width="1280" height="720"></canvas>
 
   <script type="module" src="../js/main.js"></script>
 </body>
