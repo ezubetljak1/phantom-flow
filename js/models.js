@@ -402,9 +402,19 @@ function changeLanes(state, accParams, mobilParams) {
   }
 
   for (const { veh, newLane } of laneChanges) {
+    // zapamti staru traku – potrebno za animaciju
+    veh.prevLane = veh.lane;
+
+    // postavi novu traku (fizički je već "prešao")
     veh.lane = newLane;
+
+    // za MOBIL cooldown (da ne skače stalno)
     veh.lastLaneChangeTime = now;
-  }
+
+    // za vizuelnu animaciju (slide + promjena boje)
+    veh.laneChangeStartTime = now;
+}
+
 }
 
 // -----------------------

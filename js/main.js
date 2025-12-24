@@ -12,7 +12,7 @@ const state = {
   mainLaneCount: 3,  // lane 0,1,2 = glavne
   rampLaneIndex: 3,  // lane 3 = rampa
   rampStart: 200,
-  rampEnd: 272,
+  rampEnd: 280,
   vehicles: []
 };
 
@@ -84,15 +84,13 @@ const geom = {
 
   laneOffset: 18,
 
-  // rampa – "rotirana" nadesno i poravnata s donjom trakom
+  // rampa – rotirana nadesno i poravnata s donjom trakom
   ramp: {
     s0: state.rampStart,
     s1: state.rampEnd,
-    // početak rampe (više desno i niže)
-    x0: 580,
+    x0: 580,  // početak rampe
     y0: 610,
-    // tačka spajanja tik ispod donje srednje trake
-    x1: 440,
+    x1: 440,  // tačka spajanja
     y1: 542
   }
 };
@@ -154,11 +152,49 @@ function mapRamp(s) {
   return { x, y };
 }
 
-function worldToCanvas(veh) {
+// ---------------------------
+// 3a) Lane-change progres i efektivna traka
+// ---------------------------
+
+const LANE_CHANGE_DURATION = 1.2; // s, da bude bas vidljivo
+
+function laneChangeProgress(veh, now) {
+  if (
+    veh.prevLane === undefined ||
+    veh.laneChangeStartTime === undefined
+  ) {
+    return 0;
+  }
+
+  const tau = (now - veh.laneChangeStartTime) / LANE_CHANGE_DURATION;
+
+  if (tau >= 1) {
+    // animacija završena – očisti state
+    veh.prevLane = undefined;
+    veh.laneChangeStartTime = undefined;
+    return 0;
+  }
+
+  return Math.max(0, tau);
+}
+
+function worldToCanvasWithProgress(veh, tLC) {
   if (veh.lane === state.rampLaneIndex) {
     return mapRamp(veh.x);
   }
-  return mapMainLane(veh.x, veh.lane);
+
+  let laneIdx = veh.lane;
+
+  if (
+    tLC > 0 &&
+    veh.prevLane !== undefined &&
+    veh.prevLane !== veh.lane
+  ) {
+    // glatko pređi sa prevLane na lane
+    laneIdx = veh.prevLane + (veh.lane - veh.prevLane) * tLC;
+  }
+
+  return mapMainLane(veh.x, laneIdx);
 }
 
 // ---------------------------
@@ -238,36 +274,69 @@ function drawBackground() {
     if (dashed) ctx.setLineDash([]);
   }
 
-  // rub rampe – kraće, da se ne vidi gornji dio bijele linije
+  // rub rampe – kraće
   strokeRamp('#ffffff', laneWidth + 2 * edgeWidth, false, 0.8);
 
-  // tijelo rampe – malo duže, da se vizuelno spoji s cestom
+  // tijelo rampe – malo duže
   strokeRamp('#555555', laneWidth - 2, false, 0.92);
 }
 
 // ---------------------------
-// 5) Crtanje vozila
+// 5) Boje i crtanje vozila (sa promjenom boje)
 // ---------------------------
+
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  const bigint = parseInt(h, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return { r, g, b };
+}
+
+function rgbToHex(r, g, b) {
+  const toHex = (x) => x.toString(16).padStart(2, '0');
+  return '#' + toHex(r) + toHex(g) + toHex(b);
+}
+
+function lerpColor(c1, c2, t) {
+  const a = hexToRgb(c1);
+  const b = hexToRgb(c2);
+  const r = Math.round(a.r + (b.r - a.r) * t);
+  const g = Math.round(a.g + (b.g - a.g) * t);
+  const b2 = Math.round(a.b + (b.b - a.b) * t);
+  return rgbToHex(r, g, b2);
+}
+
+function baseColorForLane(lane) {
+  if (lane === state.rampLaneIndex) return '#ffcc00'; // rampa
+  if (lane === 0) return '#4caf50';
+  if (lane === 1) return '#2196f3';
+  return '#e91e63';
+}
 
 function drawVehicles() {
   for (const veh of state.vehicles) {
-    const { x, y } = worldToCanvas(veh);
+    const tLC = laneChangeProgress(veh, simTime);
+    const { x, y } = worldToCanvasWithProgress(veh, tLC);
+
+    // boja: ako mijenja traku → blend između osnovne boje i bijele
+    const baseColor = baseColorForLane(veh.lane);
+    let fillColor = baseColor;
+
+    if (tLC > 0) {
+      // prvo pola vremena ide prema bijeloj, drugo pola se vraća
+      const tBlink = tLC < 0.5 ? tLC * 2 : (1 - tLC) * 2;
+      fillColor = lerpColor(baseColor, '#ffffff', tBlink);
+    }
 
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, 2 * Math.PI);
-
-    if (veh.lane === state.rampLaneIndex) {
-      ctx.fillStyle = '#ffcc00'; // rampa
-    } else if (veh.lane === 0) {
-      ctx.fillStyle = '#4caf50';
-    } else if (veh.lane === 1) {
-      ctx.fillStyle = '#2196f3';
-    } else {
-      ctx.fillStyle = '#e91e63';
-    }
-
+    ctx.fillStyle = fillColor;
     ctx.fill();
-    ctx.lineWidth = 1;
+
+    // ako mijenja traku, daj mu jači crni outline
+    ctx.lineWidth = tLC > 0 ? 2 : 1;
     ctx.strokeStyle = '#000';
     ctx.stroke();
   }
