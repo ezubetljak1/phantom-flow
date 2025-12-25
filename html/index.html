@@ -45,6 +45,21 @@
     input[type="range"]{ width: 100%; }
     .val{ opacity: .85; min-width: 80px; text-align:right; font-variant-numeric: tabular-nums; }
 
+    /* NEW: buttons (minimal styling, matches existing dark UI) */
+    button {
+      background: #1a1a1a;
+      color: #eee;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1;
+    }
+    button:hover { background: #222; }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
     canvas {
       border: 1px solid #333;
       background: #000;
@@ -56,6 +71,16 @@
   <div id="info">IDM + MOBIL, 3 trake + ulazna rampa</div>
 
   <div id="controls">
+
+    <!-- NEW: Sim controls -->
+    <div class="ctrl">
+      <div class="row"><div>Sim</div><div class="val" id="simStatus">RUN</div></div>
+      <div class="row">
+        <button id="pauseBtn" type="button">Pause</button>
+        <button id="resetBtn" type="button">Reset</button>
+      </div>
+    </div>
+
     <div class="ctrl">
       <div class="row"><div>V0</div><div class="val" id="v0Value"></div></div>
       <input id="v0Slider" type="range" min="40" max="140" step="1">
