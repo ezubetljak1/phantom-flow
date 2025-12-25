@@ -18,9 +18,9 @@ function myTanh(x) {
 // -----------------------
 export const defaultIdmParams = {
   v0: 30,      // desired speed (m/s)
-  T: 1.8,
+  T: 1.4,
   s0: 4.0,
-  a: 1.0,
+  a: 0.3,
   b: 1.5,
   cool: 0.9,
   bmax: 10.0
@@ -75,7 +75,7 @@ function accACC(s, v, vl, al, params) {
 export const defaultMobilParams = {
   bSafe: 2.0,
   bSafeMax: 4.0,
-  p: 0.3,
+  p: 0.1,
   bThr: 0.2,
   bBiasRight: 0.0,
   cooldown: 3.0

@@ -291,8 +291,8 @@ const idmParams = { ...defaultIdmParams };
 const mobilParams = { ...defaultMobilParams };
 
 // defaulti koji lakše naprave stop&go
-let mainInflowPerHour = 5600;
-let rampInflowPerHour = 1400;
+let mainInflowPerHour = 4500;
+let rampInflowPerHour = 1200;
 
 const mainSpawnAccumulators = new Array(net.roads.main.laneCount).fill(0);
 let rampSpawnAccumulator = 0;
@@ -436,7 +436,7 @@ function loop(ts) {
   const realDt = (ts - lastTs) / 1000;
   lastTs = ts;
 
-  const dt = 0.1;
+  const dt = 0.05;
   const nSteps = Math.max(1, Math.min(10, Math.round(realDt / dt)));
 
   for (let i = 0; i < nSteps; i++) {
