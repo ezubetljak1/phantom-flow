@@ -509,6 +509,8 @@ function updateSimUI() {
 
 function initSim() {
   // recreate RNG so reset truly restarts deterministically for same seed
+  clearLog();
+
   rng = makeMulberry32(hashSeed(seedValue));
   setRng(rng);
   rand01 = () => rng();
@@ -525,6 +527,7 @@ function initSim() {
 
   // seed vehicles again
   seedVehicles();
+  initDetectors();
 }
 
 if (pauseBtn) {
@@ -590,6 +593,7 @@ function loop(ts) {
     detectorsOnStep();
   }
   detectorsUpdateUI();
+  logTick();
 
   drawBackground();
   drawVehicles();
@@ -637,7 +641,11 @@ function makeDetector(label, s, els) {
     window: DET_WINDOW_SEC,
     range: DET_RANGE_M,
     passTimes: [], // times (sec) when any vehicle crossed from <s to >=s
-    els
+    totalPasses: 0,
+    els,
+    last: null,
+    smoothSpeed: null,
+    smoothDens: null
   };
 }
 function clamp(x, a, b) {
@@ -682,8 +690,46 @@ function initDetectors() {
   for (const d of detectors) {
     if (d.els?.label) d.els.label.textContent = `${d.label} @ ${d.s.toFixed(0)} m`;
   }
+
+  refreshLogDerivedMeta();
 }
 
+// ---- travel-time tracker state ----
+const TT_WINDOW_SEC = 180; // keep last 3 minutes of TT samples
+const ttBySegment = {
+  "D1_D2": [],
+  "D2_D3": [],
+  "D1_D3": []
+};
+const seenAt = new Map(); // vid -> { D1: t, D2: t, D3: t }
+
+function pushTT(seg, dt, nowT) {
+  if (!Number.isFinite(dt) || dt <= 0) return;
+  ttBySegment[seg].push({ t: nowT, dt });
+  // prune old
+  const tMin = nowT - TT_WINDOW_SEC;
+  while (ttBySegment[seg].length && ttBySegment[seg][0].t < tMin) ttBySegment[seg].shift();
+}
+
+function recordCrossing(detLabel, veh, nowT) {
+  const vid = (veh && (veh.id ?? veh.vid ?? veh._id));
+  if (vid == null) return;
+
+  let rec = seenAt.get(vid);
+  if (!rec) {
+    rec = {};
+    seenAt.set(vid, rec);
+  }
+  if (rec[detLabel] == null) rec[detLabel] = nowT;
+
+  // If we have pairs, compute TT
+  if (rec.D1 != null && rec.D2 != null) pushTT("D1_D2", rec.D2 - rec.D1, nowT);
+  if (rec.D2 != null && rec.D3 != null) pushTT("D2_D3", rec.D3 - rec.D2, nowT);
+  if (rec.D1 != null && rec.D3 != null) pushTT("D1_D3", rec.D3 - rec.D1, nowT);
+
+  // cleanup: once passed D3, we can drop this vehicle record
+  if (rec.D3 != null) seenAt.delete(vid);
+}
 
 // Called after EACH stepNetwork (bitno kad imaš nSteps>1)
 function detectorsOnStep() {
@@ -694,10 +740,17 @@ function detectorsOnStep() {
     for (const v of mainVeh) {
       const ps = v.prevS;
       if (typeof ps !== 'number') continue;
-      if (ps < d.s && v.s >= d.s) d.passTimes.push(t);
+
+      // crossing event
+      if (ps < d.s && v.s >= d.s) {
+        d.passTimes.push(t);
+        d.totalPasses += 1;
+        recordCrossing(d.label, v, t);
+      }
     }
   }
 }
+
 
 // Called ONCE per animation frame (prune + compute + UI)
 function detectorsUpdateUI() {
@@ -738,6 +791,19 @@ function detectorsUpdateUI() {
       d.smoothDens  = d.smoothDens  + alpha * (densVehKm - d.smoothDens);
     }
 
+    // keep last computed values for logging/plotting
+    d.last = {
+      t,
+      s: d.s,
+      flowVehH: flow,
+      meanKmh: meanKmh,
+      densityVehKm: densVehKm,
+      countInRange: cnt,
+      smoothSpeedKmh: (d.smoothSpeed ?? null),
+      smoothDensityVehKm: (d.smoothDens ?? null)
+    };
+
+
     // 5) UI
     if (d.els?.label) d.els.label.textContent = `${d.label} @ ${d.s.toFixed(0)} m`;
     if (d.els?.flow)  d.els.flow.textContent  = `${flow.toFixed(0)} veh/h`;
@@ -750,6 +816,309 @@ function detectorsUpdateUI() {
     }
   }
 }
+// ---------------------------
+// JSON logging (for Python plotting + heatmaps)
+// ---------------------------
+const LOG_EVERY_SEC = 1.0;     // 1 Hz
+let lastLogT = -Infinity;
+
+// heatmap binning along MAIN road
+const BIN_SIZE_M = 20;         // 10-25m je ok; 20m super kompromis
+let nBinsMain = Math.ceil(NET_CONFIG.mainLength / BIN_SIZE_M);
+
+// helper stats
+function mean(arr) {
+  if (!arr.length) return null;
+  let s = 0;
+  for (const x of arr) s += x;
+  return s / arr.length;
+}
+function std(arr) {
+  if (arr.length < 2) return 0;
+  const m = mean(arr);
+  let v = 0;
+  for (const x of arr) v += (x - m) * (x - m);
+  return Math.sqrt(v / (arr.length - 1));
+}
+function quantile(sorted, q) {
+  if (!sorted.length) return null;
+  const pos = (sorted.length - 1) * q;
+  const i = Math.floor(pos);
+  const f = pos - i;
+  if (i + 1 < sorted.length) return sorted[i] * (1 - f) + sorted[i + 1] * f;
+  return sorted[i];
+}
+function ttStats(list) {
+  const dts = list.map(x => x.dt).filter(Number.isFinite);
+  if (!dts.length) return { count: 0 };
+  dts.sort((a,b)=>a-b);
+  return {
+    count: dts.length,
+    min: dts[0],
+    mean: mean(dts),
+    median: quantile(dts, 0.5),
+    p90: quantile(dts, 0.9),
+    p95: quantile(dts, 0.95),
+    max: dts[dts.length - 1]
+  };
+}
+
+function computeBinsMain(vehMain) {
+  // arrays: total across lanes
+  const count = new Array(nBinsMain).fill(0);
+  const sumV = new Array(nBinsMain).fill(0);
+
+  // per-lane
+  const laneCount = net.roads.main.laneCount;
+  const countL = Array.from({ length: laneCount }, () => new Array(nBinsMain).fill(0));
+  const sumVL = Array.from({ length: laneCount }, () => new Array(nBinsMain).fill(0));
+
+  for (const v of vehMain) {
+    const s = v.s;
+    if (!Number.isFinite(s)) continue;
+    let b = Math.floor(s / BIN_SIZE_M);
+    if (b < 0) b = 0;
+    if (b >= nBinsMain) b = nBinsMain - 1;
+
+    const kmh = (v.v ?? 0) * 3.6;
+
+    count[b] += 1;
+    sumV[b] += kmh;
+
+    const ln = v.lane ?? 0;
+    if (ln >= 0 && ln < laneCount) {
+      countL[ln][b] += 1;
+      sumVL[ln][b] += kmh;
+    }
+  }
+
+  const speedKmh = count.map((c, i) => (c ? sumV[i] / c : null));
+  const densityVehKm = count.map(c => c * (1000 / BIN_SIZE_M)); // veh / km
+
+  const speedKmhByLane = [];
+  const densityVehKmByLane = [];
+  for (let ln = 0; ln < net.roads.main.laneCount; ln++) {
+    speedKmhByLane.push(countL[ln].map((c, i) => (c ? sumVL[ln][i] / c : null)));
+    densityVehKmByLane.push(countL[ln].map(c => c * (1000 / BIN_SIZE_M)));
+  }
+
+  return {
+    binSizeM: BIN_SIZE_M,
+    nBins: nBinsMain,
+    speedKmh,
+    densityVehKm,
+    speedKmhByLane,
+    densityVehKmByLane
+  };
+}
+
+function computeGlobalStats(vehMain, vehRamp) {
+  const spMain = [];
+  const spRamp = [];
+  const accMain = [];
+
+  let brakingMain = 0;
+  let slowMain = 0;     // < 5 km/h
+  let stoppedMain = 0;  // < 0.5 km/h
+
+  // also store slow region extent (helpful for "queue length" proxy)
+  let slowMinS = null;
+  let slowMaxS = null;
+
+  for (const v of vehMain) {
+    const kmh = (v.v ?? 0) * 3.6;
+    spMain.push(kmh);
+
+    const a = v.acc ?? 0;
+    accMain.push(a);
+    if (a < -1.0) brakingMain += 1;
+
+    if (kmh < 5) {
+      slowMain += 1;
+      const s = v.s;
+      if (Number.isFinite(s)) {
+        slowMinS = (slowMinS == null) ? s : Math.min(slowMinS, s);
+        slowMaxS = (slowMaxS == null) ? s : Math.max(slowMaxS, s);
+      }
+    }
+    if (kmh < 0.5) stoppedMain += 1;
+  }
+
+  for (const v of vehRamp) {
+    spRamp.push((v.v ?? 0) * 3.6);
+  }
+
+  // lane stats
+  const laneCount = net.roads.main.laneCount;
+  const laneSpeed = Array.from({ length: laneCount }, () => []);
+  const laneCountVeh = new Array(laneCount).fill(0);
+
+  for (const v of vehMain) {
+    const ln = v.lane ?? 0;
+    if (ln >= 0 && ln < laneCount) {
+      laneSpeed[ln].push((v.v ?? 0) * 3.6);
+      laneCountVeh[ln] += 1;
+    }
+  }
+
+  return {
+    main: {
+      avgSpeedKmh: mean(spMain),
+      stdSpeedKmh: std(spMain),
+      avgAcc: mean(accMain),
+      fracBraking: vehMain.length ? brakingMain / vehMain.length : 0,
+      slowCount: slowMain,
+      stoppedCount: stoppedMain,
+      slowMinS,
+      slowMaxS,
+      laneAvgSpeedKmh: laneSpeed.map(xs => mean(xs)),
+      laneCount: laneCountVeh
+    },
+    ramp: {
+      avgSpeedKmh: mean(spRamp),
+      stdSpeedKmh: std(spRamp)
+    }
+  };
+}
+
+const logData = {
+  meta: {
+    seed: seedValue,
+    createdAt: new Date().toISOString(),
+    dtSim: 0.05,
+    logEverySec: LOG_EVERY_SEC,
+    netConfig: NET_CONFIG,
+    derived: {
+      mainLength: NET_CONFIG.mainLength,
+      laneCount: NET_CONFIG.mainLaneCount,
+      mergeS: NET_CONFIG.mergeMainS,
+      curveStartS: NET_CONFIG.curveStartS,
+      curveEndS: NET_CONFIG.curveStartS + NET_CONFIG.curveLength,
+      postCurveEndS: NET_CONFIG.curveStartS + NET_CONFIG.curveLength + NET_CONFIG.postCurveLength,
+      bins: { binSizeM: BIN_SIZE_M, nBins: nBinsMain },
+      detectors: {} // filled after initDetectors()
+    }
+  },
+  samples: []
+};
+
+function refreshLogDerivedMeta() {
+  // call after initDetectors() or after net recreate
+  nBinsMain = Math.ceil(net.roads.main.length / BIN_SIZE_M);
+  logData.meta.derived.mainLength = net.roads.main.length;
+  logData.meta.derived.laneCount = net.roads.main.laneCount;
+  logData.meta.derived.mergeS = net.merge?.toS ?? NET_CONFIG.mergeMainS;
+  logData.meta.derived.curveStartS = curveStartS;
+  logData.meta.derived.curveEndS = curveStartS + curveLen;
+  logData.meta.derived.postCurveEndS = curveStartS + curveLen + postLen;
+  logData.meta.derived.bins = { binSizeM: BIN_SIZE_M, nBins: nBinsMain };
+
+  const detMap = {};
+  for (const d of detectors) detMap[d.label] = { s: d.s, range: d.range, window: d.window };
+  logData.meta.derived.detectors = detMap;
+}
+
+function logTick() {
+  const t = net.time;
+  if (t - lastLogT < LOG_EVERY_SEC) return;
+  lastLogT = t;
+
+  const vehAll = getAllVehicles(net);
+  const vehMain = net.roads.main.allVehicles();
+  const vehRamp = net.roads.ramp.allVehicles();
+
+  // detector snapshot (last computed)
+  const detObj = {};
+  const detTotals = {};
+  for (const d of detectors) {
+    detObj[d.label] = d.last ? { ...d.last } : null;
+    detTotals[d.label] = d.totalPasses ?? 0;
+  }
+
+  // heatmap bins along main
+  const binsMain = computeBinsMain(vehMain);
+
+  // global KPIs
+  const global = computeGlobalStats(vehMain, vehRamp);
+
+  // travel time stats from sliding window arrays
+  const tt = {
+    windowSec: TT_WINDOW_SEC,
+    D1_D2: ttStats(ttBySegment["D1_D2"]),
+    D2_D3: ttStats(ttBySegment["D2_D3"]),
+    D1_D3: ttStats(ttBySegment["D1_D3"])
+  };
+
+  logData.samples.push({
+    t,
+    inflow: { mainInflowPerHour, rampInflowPerHour },
+    counts: { nAll: vehAll.length, nMain: vehMain.length, nRamp: vehRamp.length },
+
+    // core detector signals (for time-series)
+    detectors: detObj,
+
+    // cumulative counts (N-curves)
+    detectorTotals: detTotals,
+
+    // higher-level summary metrics
+    global,
+
+    // space-time heatmap payload (speed/density per bin, by lane)
+    binsMain,
+
+    // travel time stats
+    travelTime: tt
+  });
+
+  const logInfo = document.getElementById('logInfo');
+  if (logInfo) logInfo.textContent = `log: ${logData.samples.length} samples`;
+}
+
+function downloadJSON() {
+  const nameSeed = String(seedValue).replace(/[^a-z0-9_-]+/gi, '_');
+  const fileName = `simlog_seed-${nameSeed}_t-${Math.round(net.time)}.json`;
+
+  const blob = new Blob([JSON.stringify(logData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  URL.revokeObjectURL(url);
+}
+
+function clearLog() {
+  logData.samples.length = 0;
+  lastLogT = -Infinity;
+  logData.meta.createdAt = new Date().toISOString();
+
+  // also clear TT buffers and seenAt
+  for (const k of Object.keys(ttBySegment)) ttBySegment[k].length = 0;
+  seenAt.clear();
+
+   // KLJUČNO: reset detector internal state
+  for (const d of detectors) {
+    d.passTimes.length = 0;
+    d.totalPasses = 0;
+    d.last = null;
+    d.smoothSpeed = null;
+    d.smoothDens = null;
+  }
+
+  const logInfo = document.getElementById('logInfo');
+  if (logInfo) logInfo.textContent = `log: 0 samples`;
+}
+
+// wire buttons
+const downloadLogBtn = document.getElementById('downloadLogBtn');
+const clearLogBtn = document.getElementById('clearLogBtn');
+if (downloadLogBtn) downloadLogBtn.addEventListener('click', downloadJSON);
+if (clearLogBtn) clearLogBtn.addEventListener('click', clearLog);
+
 
 
 // Optional: nacrtaj detektore kao isprekidanu liniju na putu
