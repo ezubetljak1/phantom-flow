@@ -58,7 +58,7 @@ const NET_CONFIG = {
   mainLaneCount: 3,
   rampLength: 125,
 
-  mergeMainS: 470,
+  mergeMainS: 267,
   mergeMainLane: 2,
   mergeTriggerRampS: 110,
 
@@ -182,6 +182,7 @@ function mapMainLane(s, laneIndex) {
   return { x, y };
 }
 
+
 function mapRamp(sRamp) {
   const r = geom.ramp;
   const Lr = net.roads.ramp.length;
@@ -279,6 +280,27 @@ function drawBackground() {
 
   strokeRamp('#ffffff', laneWidth + 2 * edgeWidth, false, 0.85);
   strokeRamp('#555555', laneWidth - 2, false, 0.95);
+
+  function drawMergeMarker() {
+  const p0 = mapMainLane(net.merge.toS, 0);
+  const p1 = mapMainLane(net.merge.toS, net.roads.main.laneCount - 1);
+
+  ctx.save();
+  ctx.setLineDash([6, 6]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// inside drawBackground(), near the end:
+drawMergeMarker();
+
+    // detector markers
+  drawDetectors();
 }
 
 // ---------------------------
@@ -565,7 +587,9 @@ function loop(ts) {
     spawnMainVehicles(dt);
     spawnRampVehicles(dt);
     stepNetwork(net, idmParams, mobilParams, dt);
+    detectorsOnStep();
   }
+  detectorsUpdateUI();
 
   drawBackground();
   drawVehicles();
@@ -576,4 +600,178 @@ function loop(ts) {
 
 // initial seed on load
 seedVehicles();
+// ---------------------------
+// Detectors (simple loop detectors on main road)
+// - counts vehicles crossing a fixed s-position
+// - computes flow (veh/h) in a sliding time window
+// - computes mean speed (km/h) + density (veh/km) in a small spatial window
+// ---------------------------
+const DET_WINDOW_SEC = 30;  // sliding window for flow
+const DET_RANGE_M = 50;     // +/- range around detector for speed/density
+
+const detEls = {
+  d1Label: document.getElementById('det1Label'),
+  d1Flow:  document.getElementById('det1Flow'),
+  d1Speed: document.getElementById('det1Speed'),
+  d1Dens:  document.getElementById('det1Density'),
+
+  d2Label: document.getElementById('det2Label'),
+  d2Flow:  document.getElementById('det2Flow'),
+  d2Speed: document.getElementById('det2Speed'),
+  d2Dens:  document.getElementById('det2Density'),
+
+  // NEW: D3 (iza krivine)
+  d3Label: document.getElementById('det3Label'),
+  d3Flow:  document.getElementById('det3Flow'),
+  d3Speed: document.getElementById('det3Speed'),
+  d3Dens:  document.getElementById('det3Density')
+};
+
+
+let detectors = []; // filled by initDetectors()
+
+function makeDetector(label, s, els) {
+  return {
+    label,
+    s,
+    window: DET_WINDOW_SEC,
+    range: DET_RANGE_M,
+    passTimes: [], // times (sec) when any vehicle crossed from <s to >=s
+    els
+  };
+}
+function clamp(x, a, b) {
+  return Math.max(a, Math.min(b, x));
+}
+
+function initDetectors() {
+  const L = net.roads.main.length;
+
+  const sMerge = net.merge.toS;
+
+  const sCurveIn  = curveStartS;               // ulaz u krivinu
+  const sCurveOut = curveStartS + curveLen;    // izlaz iz krivine
+
+  // D1: prije merge
+  const s1 = clamp(sMerge - 60, 0, L);
+
+  // D2: poslije merge ali prije krivine
+  // cilj: između merge+80 i (curveStart-40)
+  const minS2 = sMerge + 80;
+  const maxS2 = sCurveIn - 40;
+
+  // ako je merge preblizu krivini pa se opsezi "preklapaju", fallback:
+  // stavi D2 na sredinu između merge i krivine (ali ipak u validnom dometu)
+  let s2;
+  if (minS2 < maxS2) {
+    s2 = clamp(sMerge + 140, minS2, maxS2);
+  } else {
+    const mid = (sMerge + sCurveIn) * 0.5;
+    s2 = clamp(mid, 0, L);
+  }
+
+  // D3: iza krivine (na izlazu)
+  const s3 = clamp(sCurveOut + 20, 0, L);
+
+  detectors = [
+    makeDetector('D1', s1, { label: detEls.d1Label, flow: detEls.d1Flow, speed: detEls.d1Speed, dens: detEls.d1Dens }),
+    makeDetector('D2', s2, { label: detEls.d2Label, flow: detEls.d2Flow, speed: detEls.d2Speed, dens: detEls.d2Dens }),
+    makeDetector('D3', s3, { label: detEls.d3Label, flow: detEls.d3Flow, speed: detEls.d3Speed, dens: detEls.d3Dens })
+  ];
+
+  for (const d of detectors) {
+    if (d.els?.label) d.els.label.textContent = `${d.label} @ ${d.s.toFixed(0)} m`;
+  }
+}
+
+
+// Called after EACH stepNetwork (bitno kad imaš nSteps>1)
+function detectorsOnStep() {
+  const mainVeh = net.roads.main.allVehicles();
+  const t = net.time;
+
+  for (const d of detectors) {
+    for (const v of mainVeh) {
+      const ps = v.prevS;
+      if (typeof ps !== 'number') continue;
+      if (ps < d.s && v.s >= d.s) d.passTimes.push(t);
+    }
+  }
+}
+
+// Called ONCE per animation frame (prune + compute + UI)
+function detectorsUpdateUI() {
+  const mainVeh = net.roads.main.allVehicles();
+  const t = net.time;
+
+  const alpha = 0.2; // smoothing strength (0..1)
+
+  for (const d of detectors) {
+    // 1) prune passTimes to last window seconds
+    const tMin = t - d.window;
+    while (d.passTimes.length && d.passTimes[0] < tMin) d.passTimes.shift();
+
+    // 2) flow over window
+    const flow = (d.passTimes.length / d.window) * 3600;
+
+    // 3) local speed + density in +/- range around detector position
+    let sumV = 0;
+    let cnt = 0;
+    for (const v of mainVeh) {
+      if (Math.abs(v.s - d.s) <= d.range) {
+        sumV += v.v;
+        cnt += 1;
+      }
+    }
+
+    const meanV = cnt ? (sumV / cnt) : 0;
+    const meanKmh = meanV * 3.6;
+    const densVehKm = (cnt / (2 * d.range)) * 1000;
+
+    // 4) update smooth values only when we have data
+    if (cnt) {
+      d.smoothSpeed = (d.smoothSpeed ?? meanKmh);
+      d.smoothDens  = (d.smoothDens  ?? densVehKm);
+
+      // exponential moving average
+      d.smoothSpeed = d.smoothSpeed + alpha * (meanKmh - d.smoothSpeed);
+      d.smoothDens  = d.smoothDens  + alpha * (densVehKm - d.smoothDens);
+    }
+
+    // 5) UI
+    if (d.els?.label) d.els.label.textContent = `${d.label} @ ${d.s.toFixed(0)} m`;
+    if (d.els?.flow)  d.els.flow.textContent  = `${flow.toFixed(0)} veh/h`;
+
+    if (d.els?.speed) {
+      d.els.speed.textContent = cnt ? `${d.smoothSpeed.toFixed(1)} km/h` : '—';
+    }
+    if (d.els?.dens) {
+      d.els.dens.textContent  = cnt ? `${d.smoothDens.toFixed(1)} veh/km` : '—';
+    }
+  }
+}
+
+
+// Optional: nacrtaj detektore kao isprekidanu liniju na putu
+function drawDetectors() {
+  if (!detectors.length) return;
+
+  ctx.save();
+  ctx.setLineDash([10, 8]);
+  ctx.strokeStyle = 'rgba(144,213,255,1)';
+  ctx.lineWidth = 2;
+
+  for (const d of detectors) {
+    const p0 = mapMainLane(d.s, 0);
+    const p1 = mapMainLane(d.s, net.roads.main.laneCount - 1);
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+initDetectors();
 requestAnimationFrame(loop);
