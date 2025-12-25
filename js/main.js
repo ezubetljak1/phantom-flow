@@ -6,16 +6,57 @@ import {
   trySpawnMain,
   trySpawnRamp,
   defaultIdmParams,
-  defaultMobilParams
+  defaultMobilParams,
+  setRng
 } from './models.js';
 
 // ---------------------------
-// Network
+// Seeded RNG (from URL ?seed=...)
 // ---------------------------
-const net = createNetwork({
+function hashSeed(seed) {
+  if (seed == null) return 0x12345;
+  if (Number.isFinite(seed)) return (seed >>> 0);
+
+  const str = String(seed);
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function makeMulberry32(seedU32) {
+  let a = (seedU32 >>> 0);
+  return function rng() {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const urlParams = new URLSearchParams(window.location.search);
+const seedParam = urlParams.get('seed'); // can be null
+const seedValue = (seedParam === null)
+  ? 12345
+  : (/^-?\d+$/.test(seedParam) ? Number(seedParam) : seedParam);
+
+// rng is re-creatable on reset:
+let rng = makeMulberry32(hashSeed(seedValue));
+setRng(rng);
+
+// helper for main.js random usage (same rng as models)
+let rand01 = () => rng();
+
+// ---------------------------
+// Network config (kept same as before)
+// ---------------------------
+const NET_CONFIG = {
   mainLength: 920,
   mainLaneCount: 3,
-  rampLength: 140,
+  rampLength: 125,
 
   mergeMainS: 470,
   mergeMainLane: 2,
@@ -27,12 +68,15 @@ const net = createNetwork({
   postCurveLength: 80,
   postCurveFactor: 0.85,
 
-  // ako ti se "prejako" ponaša, kasnije povećaj brakePulseEvery (npr 22)
+  // phantom is already disabled by default in models.js net.phantom.enabled=false
+  // but leaving these doesn't hurt:
   brakePulseEvery: 16.0,
   brakePulseDuration: 1.6,
   brakePulseDecel: 3.2
-});
+};
 
+// We need to reset these on Reset:
+let net = createNetwork(NET_CONFIG);
 const idCounter = { nextId: 0 };
 
 // ---------------------------
@@ -71,7 +115,7 @@ const geom = {
 };
 
 // ---------------------------
-// Seed
+// Seed vehicles
 // ---------------------------
 function seedVehicles() {
   net.roads.main.lanes.forEach((arr) => (arr.length = 0));
@@ -82,19 +126,17 @@ function seedVehicles() {
   for (let lane = 0; lane < net.roads.main.laneCount; lane++) {
     for (let k = 0; k < nCarsPerLane; k++) {
       const s = (k * net.roads.main.length) / nCarsPerLane + lane * 6;
-      const v = defaultIdmParams.v0 * (0.75 + 0.5 * Math.random());
+      const v = defaultIdmParams.v0 * (0.75 + 0.5 * rand01());
       trySpawnMain(net, lane, s, v, idCounter, 7);
     }
   }
 
   for (let k = 0; k < 6; k++) {
     const s = k * 16;
-    const v = 12 + (Math.random() - 0.5) * 3;
+    const v = 12 + (rand01() - 0.5) * 3;
     trySpawnRamp(net, s, v, idCounter, 9);
   }
 }
-
-seedVehicles();
 
 // ---------------------------
 // Mapping
@@ -102,7 +144,7 @@ seedVehicles();
 function mapMainLane(s, laneIndex) {
   const g = geom;
   const { L_bottom, L_curve, L_top } = g;
-  let x, y, tangentAngle;
+  let x, y;
 
   if (s < 0) s = 0;
 
@@ -110,19 +152,25 @@ function mapMainLane(s, laneIndex) {
     const u = s / L_bottom;
     x = g.xRight - u * (g.xRight - g.xLeft);
     y = g.yBottom;
-    tangentAngle = Math.PI;
   } else if (s < L_bottom + L_curve) {
     const u = (s - L_bottom) / L_curve;
     const theta = Math.PI / 2 + u * Math.PI;
     x = g.cx + g.R * Math.cos(theta);
     y = g.cy + g.R * Math.sin(theta);
-    tangentAngle = theta + Math.PI / 2;
   } else {
     const u = (s - L_bottom - L_curve) / L_top;
     x = g.xLeft + u * (g.xRight - g.xLeft);
     y = g.yTop;
-    tangentAngle = 0;
   }
+
+  // tangentAngle logic from your old code preserved:
+  let tangentAngle;
+  if (s < L_bottom) tangentAngle = Math.PI;
+  else if (s < L_bottom + L_curve) {
+    const u = (s - L_bottom) / L_curve;
+    const theta = Math.PI / 2 + u * Math.PI;
+    tangentAngle = theta + Math.PI / 2;
+  } else tangentAngle = 0;
 
   const baseLane = 1;
   const offset = (laneIndex - baseLane) * g.laneOffset;
@@ -237,9 +285,9 @@ function drawBackground() {
 // Vehicles: color by speed + brake lights (SVE ISTE VELIČINE)
 // ---------------------------
 function speedColor(ratio) {
-  if (ratio < 0.35) return '#d32f2f';   // crveno
-  if (ratio < 0.65) return '#fbc02d';   // žuto
-  return '#2e7d32';                    // zeleno
+  if (ratio < 0.35) return '#d32f2f';
+  if (ratio < 0.65) return '#fbc02d';
+  return '#2e7d32';
 }
 
 function drawVehicles() {
@@ -247,7 +295,7 @@ function drawVehicles() {
 
   for (const veh of vehicles) {
     const { x, y } = worldToCanvas(veh);
-    const radius = 6; // <-- sve iste tačkice
+    const radius = 4;
 
     let fill;
     if (veh.roadId === 'ramp') {
@@ -267,7 +315,6 @@ function drawVehicles() {
     ctx.strokeStyle = '#000';
     ctx.stroke();
 
-    // brake ring kad koče
     if (veh.acc < -1.0 && veh.roadId === 'main') {
       ctx.beginPath();
       ctx.arc(x, y, radius + 2, 0, 2 * Math.PI);
@@ -290,18 +337,17 @@ function maskRightSide() {
 const idmParams = { ...defaultIdmParams };
 const mobilParams = { ...defaultMobilParams };
 
-// defaulti koji lakše naprave stop&go
-let mainInflowPerHour = 5600;
-let rampInflowPerHour = 1400;
+let mainInflowPerHour = 4500;
+let rampInflowPerHour = 1200;
 
-const mainSpawnAccumulators = new Array(net.roads.main.laneCount).fill(0);
+// accumulators must reset
+let mainSpawnAccumulators = new Array(net.roads.main.laneCount).fill(0);
 let rampSpawnAccumulator = 0;
 
 function spawnMainVehicles(dt) {
   const totalRatePerSec = mainInflowPerHour / 3600;
   if (totalRatePerSec <= 0) return;
 
-  // ✅ FIX: tačan laneCount
   const laneRatePerSec = totalRatePerSec / net.roads.main.laneCount;
   const sSpawn = 10;
 
@@ -309,7 +355,7 @@ function spawnMainVehicles(dt) {
     mainSpawnAccumulators[lane] += laneRatePerSec * dt;
 
     while (mainSpawnAccumulators[lane] >= 1.0) {
-      const vInit = idmParams.v0 * (0.85 + 0.35 * Math.random());
+      const vInit = idmParams.v0 * (0.85 + 0.35 * rand01());
       const ok = trySpawnMain(net, lane, sSpawn, vInit, idCounter, 7);
       if (!ok) break;
       mainSpawnAccumulators[lane] -= 1.0;
@@ -324,7 +370,7 @@ function spawnRampVehicles(dt) {
   rampSpawnAccumulator += ratePerSec * dt;
 
   while (rampSpawnAccumulator >= 1.0) {
-    const vInit = idmParams.v0 * (0.55 + 0.25 * Math.random());
+    const vInit = idmParams.v0 * (0.55 + 0.25 * rand01());
     const ok = trySpawnRamp(net, 0, vInit, idCounter, 9);
     if (!ok) break;
     rampSpawnAccumulator -= 1.0;
@@ -332,7 +378,7 @@ function spawnRampVehicles(dt) {
 }
 
 // ---------------------------
-// UI sliders (optional)
+// UI sliders (existing)
 // ---------------------------
 function setupSliders() {
   const byId = (id) => document.getElementById(id);
@@ -427,16 +473,92 @@ function setupSliders() {
 setupSliders();
 
 // ---------------------------
+// Pause / Reset controls
+// ---------------------------
+let running = true;
+const pauseBtn = document.getElementById('pauseBtn');
+const resetBtn = document.getElementById('resetBtn');
+const simStatus = document.getElementById('simStatus');
+
+function updateSimUI() {
+  if (simStatus) simStatus.textContent = running ? 'RUN' : 'PAUSE';
+  if (pauseBtn) pauseBtn.textContent = running ? 'Pause' : 'Resume';
+}
+
+function initSim() {
+  // recreate RNG so reset truly restarts deterministically for same seed
+  rng = makeMulberry32(hashSeed(seedValue));
+  setRng(rng);
+  rand01 = () => rng();
+
+  // recreate network
+  net = createNetwork(NET_CONFIG);
+
+  // reset spawn accumulators
+  mainSpawnAccumulators = new Array(net.roads.main.laneCount).fill(0);
+  rampSpawnAccumulator = 0;
+
+  // reset timebase for animation loop
+  lastTs = null;
+
+  // seed vehicles again
+  seedVehicles();
+}
+
+if (pauseBtn) {
+  pauseBtn.addEventListener('click', () => {
+    running = !running;
+    updateSimUI();
+  });
+}
+
+if (resetBtn) {
+  resetBtn.addEventListener('click', () => {
+    initSim();
+    running = true;
+    updateSimUI();
+  });
+}
+
+// Optional: keyboard shortcuts (ne mijenja izgled)
+// Space = pause/resume, R = reset
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    running = !running;
+    updateSimUI();
+  } else if (e.key === 'r' || e.key === 'R') {
+    initSim();
+    running = true;
+    updateSimUI();
+  }
+});
+
+updateSimUI();
+
+// ---------------------------
 // Loop
 // ---------------------------
 let lastTs = null;
 
 function loop(ts) {
   if (lastTs === null) lastTs = ts;
+
+  // If paused: keep drawing, but do NOT advance simulation,
+  // and keep lastTs synced so we don't get a huge dt after resume.
+  if (!running) {
+    lastTs = ts;
+    drawBackground();
+    drawVehicles();
+    maskRightSide();
+    requestAnimationFrame(loop);
+    return;
+  }
+
   const realDt = (ts - lastTs) / 1000;
   lastTs = ts;
 
-  const dt = 0.1;
+  const dt = 0.05;
   const nSteps = Math.max(1, Math.min(10, Math.round(realDt / dt)));
 
   for (let i = 0; i < nSteps; i++) {
@@ -452,4 +574,6 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
+// initial seed on load
+seedVehicles();
 requestAnimationFrame(loop);
