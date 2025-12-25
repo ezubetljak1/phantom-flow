@@ -1,8 +1,11 @@
 // models.js
+// MOVSIM-ish network + stronger jam dynamics:
+// - per-vehicle desired speed multiplier (heterogeneity)
+// - optional trucks (longer, slower)
+// - more aggressive merge (creates braking / shockwaves)
+// - occasional brake pulse (phantom jams)
+// - keep hard no-overlap but less "stabilizing"
 
-// -----------------------
-// Helper: tanh
-// -----------------------
 function myTanh(x) {
   if (x > 50) return 1;
   if (x < -50) return -1;
@@ -11,51 +14,41 @@ function myTanh(x) {
 }
 
 // -----------------------
-// ACC (IDM+CAH) – longitudinal model
+// ACC (IDM+CAH)
 // -----------------------
-
 export const defaultIdmParams = {
-  v0: 30,      // željena brzina (m/s)
-  T: 1.8,      // time headway (s)
-  s0: 4.0,     // minimalni razmak (m)
-  a: 1.0,      // max ugodno ubrzanje
-  b: 1.5,      // ugodno kočenje
-  cool: 0.9,   // mix faktor između IDM i CAH
-  bmax: 10.0   // maksimalno dozvoljeno kočenje (|a|)
+  v0: 30,      // desired speed (m/s)
+  T: 1.8,
+  s0: 4.0,
+  a: 1.0,
+  b: 1.5,
+  cool: 0.9,
+  bmax: 10.0
 };
 
-// ACC deterministička akceleracija (bez šuma)
 function accACC(s, v, vl, al, params) {
   const { v0, T, s0, a, b, cool, bmax } = params;
 
-  // efektivni parametri (ovdje nema speedlimit / driverfactor)
-  let v0eff = v0;
+  const v0eff = Math.max(v0, 1e-5);
   const aeff = a;
 
-  if (v0eff < 1e-5) return 0;
-
-  // free-road član (IDM)
   const accFree = aeff * (1 - Math.pow(v / v0eff, 4));
 
-  // desired gap s*
   const sStar =
     s0 +
     Math.max(
       0,
-      v * T + (0.5 * v * (v - vl)) / Math.sqrt(aeff * b)
+      v * T + (0.5 * v * (v - vl)) / Math.sqrt(Math.max(1e-6, aeff * b))
     );
 
-  // interakcijski član
   const sEff = Math.max(s, s0);
   const accInt = -aeff * Math.pow(sStar / sEff, 2);
 
-  // IDM+ (ne dozvoli previše pozitivan acc kad smo blizu)
   const accIDM = Math.min(accFree, aeff + accInt);
 
-  // CAH – collision avoidance heuristic
+  // CAH
   let accCAH;
   if (vl * (v - vl) < -2 * s * al) {
-    // "braking leader" situation
     accCAH = (v * v * al) / (vl * vl - 2 * s * al);
   } else {
     accCAH =
@@ -66,402 +59,590 @@ function accACC(s, v, vl, al, params) {
   }
   accCAH = Math.min(accCAH, aeff);
 
-  // mix IDM i CAH
   const accMix =
     accIDM > accCAH
       ? accIDM
       : accCAH + b * myTanh((accIDM - accCAH) / b);
 
-  const accACC = cool * accMix + (1 - cool) * accIDM;
+  const accACCval = cool * accMix + (1 - cool) * accIDM;
 
-  // clamp na maksimalno kočenje
-  return Math.max(-bmax, accACC);
+  return Math.max(-bmax, accACCval);
 }
 
 // -----------------------
-// MOBIL lane-change model
+// MOBIL
 // -----------------------
-
 export const defaultMobilParams = {
-  bSafe: 2.0,       // "sigurno" kočenje (~m/s^2) pri višim brzinama
-  bSafeMax: 4.0,    // dopušteno jače kočenje pri manjim brzinama
-  p: 0.3,           // politeness faktor
-  bThr: 0.2,        // prag koristi lane change-a
-  bBiasRight: 0.0,  // bez desno/left bias-a za sada
-  cooldown: 3.0     // minimalni razmak između dva LC istog vozila (s)
+  bSafe: 2.0,
+  bSafeMax: 4.0,
+  p: 0.3,
+  bThr: 0.2,
+  bBiasRight: 0.0,
+  cooldown: 3.0
 };
 
-function mobilRealizeLaneChange(
-  vrel,        // v / v0, [0,1]
-  acc,         // vlastita akceleracija na staroj traci
-  accNew,      // vlastita akceleracija na novoj traci
-  accLagNew,   // akceleracija novog followera nakon lane-change-a
-  toRight,     // bool
-  params
-) {
-  const { bSafe, bSafeMax, p, bThr, bBiasRight } = params;
-
-  const signRight = toRight ? 1 : -1;
-  const bSafeActual = vrel * bSafe + (1 - vrel) * bSafeMax;
-
-  // ekstremni bias
-  if (signRight * bBiasRight > 40) {
-    return true;
-  }
-
-  // safety kriterij: follower nakon LC ne smije previše kočiti
-  if (accLagNew < Math.min(-bSafeActual, -Math.abs(bBiasRight))) {
-    return false;
-  }
-
-  // incentive kriterij 
-  let dacc =
-    accNew - acc +
-    p * accLagNew +
-    bBiasRight * signRight -
-    bThr;
-
-  // hard-prohibit LC protiv bias-a ako |bias|>9 (ovdje nema efekta jer je 0)
-  if (bBiasRight * signRight < -9) {
-    dacc = -1;
-  }
-
-  return dacc > 0;
+function bSafeActual(v, mobilParams, idmParamsBase) {
+  const vrel = Math.max(0, Math.min(1, v / Math.max(1e-6, idmParamsBase.v0)));
+  return vrel * mobilParams.bSafe + (1 - vrel) * mobilParams.bSafeMax;
 }
 
-// -----------------------
-// Lanes & helperi
-// -----------------------
-
-function isRingLane(state, laneIndex) {
-  return (
-    state.isRing &&
-    laneIndex >= 0 &&
-    laneIndex < state.mainLaneCount
-  );
-}
-
-function groupVehiclesByLane(state) {
-  const lanes = Array.from(
-    { length: state.laneCount },
-    () => []
-  );
-  for (const veh of state.vehicles) {
-    lanes[veh.lane].push(veh);
-  }
-  // sort po x
-  for (const lane of lanes) {
-    lane.sort((a, b) => a.x - b.x);
-  }
-  return lanes;
-}
-
-function findLeaderFollowerInLane(
-  laneVehicles,
+function mobilEvaluateMove({
   veh,
-  state,
-  laneIndex
-) {
-  const isRing = isRingLane(state, laneIndex);
-  const L = state.roadLength;
+  accOld,
+  accNew,
+  accLagOld,
+  accLagNew,
+  toRight,
+  mobilParams,
+  idmParamsBase
+}) {
+  const signRight = toRight ? 1 : -1;
 
-  if (laneVehicles.length === 0) {
-    return { leader: null, follower: null };
-  }
+  const bSafe = bSafeActual(veh.v, mobilParams, idmParamsBase);
+  const safe = accLagNew >= -bSafe;
 
-  const idx = laneVehicles.indexOf(veh);
-  if (idx === -1) {
-    // vozilo nije trenutno u toj traci, tražimo gdje bi upalo
-    let insertPos = 0;
-    while (
-      insertPos < laneVehicles.length &&
-      laneVehicles[insertPos].x < veh.x
-    ) {
-      insertPos++;
-    }
-    const leader =
-      insertPos < laneVehicles.length
-        ? laneVehicles[insertPos]
-        : isRing
-        ? laneVehicles[0]
-        : null;
-    const follower =
-      insertPos > 0
-        ? laneVehicles[insertPos - 1]
-        : isRing
-        ? laneVehicles[laneVehicles.length - 1]
-        : null;
-    return { leader, follower };
-  } else {
-    const leader =
-      idx < laneVehicles.length - 1
-        ? laneVehicles[idx + 1]
-        : isRing
-        ? laneVehicles[0]
-        : null;
-    const follower =
-      idx > 0
-        ? laneVehicles[idx - 1]
-        : isRing
-        ? laneVehicles[laneVehicles.length - 1]
-        : null;
-    return { leader, follower };
-  }
-}
+  const politeness = mobilParams.p;
+  const bias = signRight * mobilParams.bBiasRight;
 
-// gap i info o lideru
-function gapAndLeader(veh, leader, state, laneIndex) {
-  const L = state.roadLength;
-  const isRing = isRingLane(state, laneIndex);
+  const incentive =
+    (accNew - accOld) + politeness * (accLagNew - accLagOld) - mobilParams.bThr + bias;
 
-  if (!leader) {
-    // nema lidera => slobodan put
-    return {
-      s: 1e6,
-      vLead: veh.v,
-      aLead: 0
-    };
-  }
-
-  let dx = leader.x - veh.x;
-  if (isRing) {
-    if (dx <= 0) dx += L;
-  }
-
-  const s = dx - veh.length;
-  return {
-    s: Math.max(s, 0.01),
-    vLead: leader.v,
-    aLead: leader.acc || 0
-  };
-}
-
-// nakon lane-change-a, follower u target traci vidi ovog veh kao lidera
-function gapFollowerAfterLC(follower, veh, state, laneIndex) {
-  const L = state.roadLength;
-  const isRing = isRingLane(state, laneIndex);
-
-  let dx = veh.x - follower.x;
-  if (isRing) {
-    if (dx <= 0) dx += L;
-  }
-
-  const s = dx - follower.length;
-  return {
-    s: Math.max(s, 0.01),
-    vLead: veh.v,
-    aLead: veh.acc || 0
-  };
+  return { safe, incentive };
 }
 
 // -----------------------
-// 1) Izračun ACC akceleracija
+// Data model
 // -----------------------
+export class Vehicle {
+  constructor({ id, s, v, lane, roadId, length = 4.5, v0Mult = 1.0, isTruck = false }) {
+    this.id = id;
+    this.s = s;
+    this.v = v;
+    this.lane = lane;
+    this.roadId = roadId;
+    this.length = length;
 
-function calcAccelerations(state, accParams) {
-  const lanes = groupVehiclesByLane(state);
-  state.minGapDebug = Infinity;
+    // heterogeneity:
+    this.v0Mult = v0Mult;
+    this.isTruck = isTruck;
 
-  for (let laneIndex = 0; laneIndex < lanes.length; laneIndex++) {
-    const laneVehicles = lanes[laneIndex];
-    for (const veh of laneVehicles) {
-      const { leader } = findLeaderFollowerInLane(
-        laneVehicles,
-        veh,
-        state,
-        laneIndex
-      );
-      const { s, vLead, aLead } = gapAndLeader(
-        veh,
-        leader,
-        state,
-        laneIndex
-      );
-      const acc = accACC(s, veh.v, vLead, aLead, accParams);
-      veh.acc = acc;
+    // dynamics / rendering helpers:
+    this.acc = 0;
+    this.prevLane = lane;
+    this.lastLaneChangeTime = -1e9;
+    this.laneChangeStartTime = -1e9;
 
-      if (leader && s < state.minGapDebug) {
-        state.minGapDebug = s;
-      }
+    // phantom jam trigger:
+    this.brakeUntil = -1e9;     // time until extra braking applies
+    this.extraBrake = 0;        // m/s^2 (negative)
+  }
+}
+
+export class Road {
+  constructor({ id, length, laneCount, isRing = false, speedProfile = null }) {
+    this.id = id;
+    this.length = length;
+    this.laneCount = laneCount;
+    this.isRing = isRing;
+    this.speedProfile = speedProfile; // function(s)-> factor (0..1)
+
+    this.lanes = Array.from({ length: laneCount }, () => []);
+  }
+
+  allVehicles() {
+    const out = [];
+    for (let l = 0; l < this.laneCount; l++) out.push(...this.lanes[l]);
+    return out;
+  }
+
+  sortLanes() {
+    for (let l = 0; l < this.laneCount; l++) {
+      this.lanes[l].sort((a, b) => a.s - b.s);
     }
   }
 }
 
-// -----------------------
-// 2) Lane-change (MOBIL + rampa)
-// -----------------------
+// local IDM params with v0(s) and per-vehicle multiplier
+function localIdmParams(road, s, idmParamsBase, veh) {
+  const f = road.speedProfile ? road.speedProfile(s) : 1.0;
+  const m = veh?.v0Mult ?? 1.0;
+  return { ...idmParamsBase, v0: idmParamsBase.v0 * f * m };
+}
 
-function changeLanes(state, accParams, mobilParams) {
-  const lanes = groupVehiclesByLane(state);
+// -----------------------
+// Network creation
+// -----------------------
+export function createNetwork({
+  mainLength = 920,
+  mainLaneCount = 3,
+  rampLength = 140,
+
+  mergeMainS = 280,
+  mergeMainLane = 2,
+  mergeTriggerRampS = 110,
+
+  mergeRegionHalfLength = 45,
+  mergeTryCount = 7,
+
+  // speed profile (curve matters)
+  curveStartS = 360,
+  curveLength = 200,
+  curveFactor = 0.70,
+  postCurveLength = 80,
+  postCurveFactor = 0.85,
+
+  // heterogeneity
+  truckFraction = 0.12,      // ~12% trucks
+  v0Spread = 0.18,           // ± spread (normal-ish)
+  truckV0Mult = 0.78,        // trucks slower
+  truckLength = 7.5,
+  carLength = 4.5,
+
+  // phantom jam
+  brakePulseEvery = 18.0,    // seconds between attempts
+  brakePulseDuration = 1.6,  // seconds
+  brakePulseDecel = 3.2      // extra braking magnitude (m/s^2)
+} = {}) {
+  const mainSpeedProfile = (s) => {
+    if (s >= curveStartS && s <= curveStartS + curveLength) return curveFactor;
+    if (s > curveStartS + curveLength && s < curveStartS + curveLength + postCurveLength) return postCurveFactor;
+    return 1.0;
+  };
+
+  const main = new Road({
+    id: 'main',
+    length: mainLength,
+    laneCount: mainLaneCount,
+    isRing: false,
+    speedProfile: mainSpeedProfile
+  });
+
+  const ramp = new Road({
+    id: 'ramp',
+    length: rampLength,
+    laneCount: 1,
+    isRing: false,
+    speedProfile: null
+  });
+
+  return {
+    time: 0,
+    roads: { main, ramp },
+    merge: {
+      toLane: mergeMainLane,
+      toS: mergeMainS,
+      triggerRampS: Math.min(mergeTriggerRampS, rampLength - 1),
+      regionHalfLength: mergeRegionHalfLength,
+      tryCount: mergeTryCount
+    },
+
+    // heterogeneity config
+    hetero: { truckFraction, v0Spread, truckV0Mult, truckLength, carLength },
+
+    // phantom jams config/state
+    phantom: {
+      pulseEvery: brakePulseEvery,
+      pulseDuration: brakePulseDuration,
+      pulseDecel: brakePulseDecel,
+      nextPulseTime: 8.0 // first pulse after ~8s
+    }
+  };
+}
+
+// -----------------------
+// Neighbor helpers
+// -----------------------
+function findNeighborsAtS(laneVehiclesSorted, sQuery) {
+  if (laneVehiclesSorted.length === 0) return { leader: null, follower: null };
+
+  let lo = 0, hi = laneVehiclesSorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (laneVehiclesSorted[mid].s < sQuery) lo = mid + 1;
+    else hi = mid;
+  }
+  const leader = lo < laneVehiclesSorted.length ? laneVehiclesSorted[lo] : null;
+  const follower = lo > 0 ? laneVehiclesSorted[lo - 1] : null;
+  return { leader, follower };
+}
+
+function findLeaderForVeh(laneVehiclesSorted, veh) {
+  const idx = laneVehiclesSorted.indexOf(veh);
+  const leader = idx >= 0 && idx < laneVehiclesSorted.length - 1 ? laneVehiclesSorted[idx + 1] : null;
+  const follower = idx > 0 ? laneVehiclesSorted[idx - 1] : null;
+  return { leader, follower };
+}
+
+function gapToLeader(veh, leader, idmParamsLocal) {
+  if (!leader) return { s: 1e6, vLead: veh.v, aLead: 0 };
+  const dx = leader.s - veh.s;
+  const gap = Math.max(0.01, dx - veh.length);
+  return { s: Math.max(gap, idmParamsLocal.s0), vLead: leader.v, aLead: leader.acc || 0 };
+}
+
+function gapFollowerAfterInsert(follower, insertedVeh, idmParamsLocal) {
+  if (!follower) return { s: 1e6, vLead: insertedVeh.v, aLead: insertedVeh.acc || 0 };
+  const dx = insertedVeh.s - follower.s;
+  const gap = Math.max(0.01, dx - follower.length);
+  return { s: Math.max(gap, idmParamsLocal.s0), vLead: insertedVeh.v, aLead: insertedVeh.acc || 0 };
+}
+
+// -----------------------
+// Accelerations
+// -----------------------
+function calcAccelerationsForRoad(road, idmParamsBase) {
+  road.sortLanes();
+
+  for (let l = 0; l < road.laneCount; l++) {
+    const laneVeh = road.lanes[l];
+    for (const veh of laneVeh) {
+      const idmLocal = localIdmParams(road, veh.s, idmParamsBase, veh);
+      const { leader } = findLeaderForVeh(laneVeh, veh);
+      const { s, vLead, aLead } = gapToLeader(veh, leader, idmLocal);
+      veh.acc = accACC(s, veh.v, vLead, aLead, idmLocal);
+    }
+  }
+}
+
+// -----------------------
+// Lane change main
+// -----------------------
+function laneChangeMain(roadMain, netTime, idmParamsBase, mobilParams) {
+  roadMain.sortLanes();
   const laneChanges = [];
 
-  const now = state.time || 0;
-  const cooldown = mobilParams.cooldown || 3;
+  for (let lane = 0; lane < roadMain.laneCount; lane++) {
+    const laneVeh = roadMain.lanes[lane];
 
-  for (let laneIndex = 0; laneIndex < lanes.length; laneIndex++) {
-    const laneVehicles = lanes[laneIndex];
+    for (const veh of laneVeh) {
+      if (netTime - veh.lastLaneChangeTime < mobilParams.cooldown) continue;
 
-    for (const veh of laneVehicles) {
-      if (
-        veh.lastLaneChangeTime !== undefined &&
-        now - veh.lastLaneChangeTime < cooldown
-      ) {
-        continue;
+      // OLD lane
+      const idmLocalOld = localIdmParams(roadMain, veh.s, idmParamsBase, veh);
+      const { leader: leaderOld, follower: followerOld } = findLeaderForVeh(laneVeh, veh);
+      const { s: sOld, vLead: vLeadOld, aLead: aLeadOld } = gapToLeader(veh, leaderOld, idmLocalOld);
+      const accOld = accACC(sOld, veh.v, vLeadOld, aLeadOld, idmLocalOld);
+
+      let accLagOld = 0;
+      if (followerOld) {
+        const idmLocalFolOld = localIdmParams(roadMain, followerOld.s, idmParamsBase, followerOld);
+        const { s: sLagOld, vLead, aLead } = gapFollowerAfterInsert(followerOld, veh, idmLocalFolOld);
+        accLagOld = accACC(sLagOld, followerOld.v, vLead, aLead, idmLocalFolOld);
       }
 
-      // kandidati traka
+      let bestLane = lane;
+      let bestIncentive = -1e9;
+
       const candidates = [];
-
-      if (laneIndex === state.rampLaneIndex) {
-        // rampa može samo u vanjsku glavnu traku (npr. 2)
-        const mergeLane = state.mainLaneCount - 1;
-        candidates.push(mergeLane);
-      } else {
-        // glavne trake: lijevo/desno unutar [0, mainLaneCount-1]
-        const left = laneIndex - 1;
-        const right = laneIndex + 1;
-        if (left >= 0 && left < state.mainLaneCount)
-          candidates.push(left);
-        if (right >= 0 && right < state.mainLaneCount)
-          candidates.push(right);
-      }
-
-      if (candidates.length === 0) continue;
-
-      const accOld = veh.acc || 0;
-      let chosenLane = laneIndex;
+      if (lane > 0) candidates.push(lane - 1);
+      if (lane < roadMain.laneCount - 1) candidates.push(lane + 1);
 
       for (const targetLane of candidates) {
-        if (targetLane === laneIndex) continue;
+        const targetVeh = roadMain.lanes[targetLane];
+        const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetVeh, veh.s);
 
-        const toRight = targetLane > laneIndex;
-        const targetLaneVehicles = lanes[targetLane];
+        const idmLocalNew = localIdmParams(roadMain, veh.s, idmParamsBase, veh);
+        const { s: sNew, vLead: vLeadNew, aLead: aLeadNew } = gapToLeader(veh, leaderNew, idmLocalNew);
+        const accNew = accACC(sNew, veh.v, vLeadNew, aLeadNew, idmLocalNew);
 
-        // lider/follower u target traci
-        const { leader: leaderNew, follower: followerNew } =
-          findLeaderFollowerInLane(
-            targetLaneVehicles,
-            veh,
-            state,
-            targetLane
-          );
-
-        const { s: sNew, vLead: vLeadNew, aLead: aLeadNew } =
-          gapAndLeader(veh, leaderNew, state, targetLane);
-        const accNew = accACC(
-          sNew,
-          veh.v,
-          vLeadNew,
-          aLeadNew,
-          accParams
-        );
-
-        let accLagNew = 0; // akceleracija novog followera nakon LC
-
+        let accLagNew = 0;
         if (followerNew) {
-          const { s: sLagNew, vLead, aLead } =
-            gapFollowerAfterLC(
-              followerNew,
-              veh,
-              state,
-              targetLane
-            );
-          accLagNew = accACC(
-            sLagNew,
-            followerNew.v,
-            vLead,
-            aLead,
-            accParams
-          );
+          const idmLocalFolNew = localIdmParams(roadMain, followerNew.s, idmParamsBase, followerNew);
+          const { s: sLagNew, vLead, aLead } = gapFollowerAfterInsert(followerNew, veh, idmLocalFolNew);
+          accLagNew = accACC(sLagNew, followerNew.v, vLead, aLead, idmLocalFolNew);
         }
 
-        const vrel = Math.max(
-          0,
-          Math.min(1, veh.v / accParams.v0)
-        );
-
-        const ok = mobilRealizeLaneChange(
-          vrel,
+        const toRight = targetLane > lane;
+        const { safe, incentive } = mobilEvaluateMove({
+          veh,
           accOld,
           accNew,
+          accLagOld,
           accLagNew,
           toRight,
-          mobilParams
-        );
+          mobilParams,
+          idmParamsBase
+        });
 
-        if (ok) {
-          chosenLane = targetLane;
-          break; // prva dobra odluka je dovoljna
+        if (safe && incentive > bestIncentive) {
+          bestIncentive = incentive;
+          bestLane = targetLane;
         }
       }
 
-      if (chosenLane !== laneIndex) {
-        laneChanges.push({ veh, newLane: chosenLane });
+      if (bestLane !== lane && bestIncentive > 0) {
+        laneChanges.push({ veh, fromLane: lane, toLane: bestLane });
       }
     }
   }
 
-  for (const { veh, newLane } of laneChanges) {
-    // zapamti staru traku – potrebno za animaciju
+  for (const ch of laneChanges) {
+    const veh = ch.veh;
+    const oldArr = roadMain.lanes[ch.fromLane];
+    const idx = oldArr.indexOf(veh);
+    if (idx >= 0) oldArr.splice(idx, 1);
+
     veh.prevLane = veh.lane;
+    veh.lane = ch.toLane;
+    veh.lastLaneChangeTime = netTime;
+    veh.laneChangeStartTime = netTime;
 
-    // postavi novu traku (fizički je već "prešao")
-    veh.lane = newLane;
+    roadMain.lanes[ch.toLane].push(veh);
+  }
 
-    // za MOBIL cooldown (da ne skače stalno)
-    veh.lastLaneChangeTime = now;
-
-    // za vizuelnu animaciju (slide + promjena boje)
-    veh.laneChangeStartTime = now;
-}
-
+  roadMain.sortLanes();
 }
 
 // -----------------------
-// 3) Update brzina i pozicija
+// Aggressive merge (creates braking waves)
 // -----------------------
+function mergeFromRamp(net, idmParamsBase, mobilParams) {
+  const ramp = net.roads.ramp;
+  const main = net.roads.main;
 
-function updateSpeedPositions(state, dt) {
-  const L = state.roadLength;
+  ramp.sortLanes();
+  main.sortLanes();
 
-  for (const veh of state.vehicles) {
-    // ballistic integracija
-    // v(t+dt) = v + a*dt
-    // x(t+dt) = x + v*dt + 0.5*a*dt^2
+  const rampLane = ramp.lanes[0];
+  const targetLaneIdx = net.merge.toLane;
+  const targetLane = main.lanes[targetLaneIdx];
 
-    const a = veh.acc || 0;
-    veh.v = Math.max(0, veh.v + a * dt);
-    veh.x = veh.x + veh.v * dt + 0.5 * a * dt * dt;
+  const mergeS = net.merge.toS;
+  const half = net.merge.regionHalfLength;
+  const tries = Math.max(1, net.merge.tryCount);
 
-    // ring-wrap za glavne trake
-    if (isRingLane(state, veh.lane)) {
-      veh.x = ((veh.x % L) + L) % L;
+  const merged = [];
+
+  for (const veh of rampLane) {
+    if (veh.s < net.merge.triggerRampS) continue;
+
+    let best = null;
+
+    for (let k = 0; k < tries; k++) {
+      const alpha = tries === 1 ? 0.5 : k / (tries - 1);
+      const candS = Math.max(0, mergeS - half + alpha * (2 * half));
+
+      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetLane, candS);
+
+      const oldS = veh.s;
+      veh.s = candS;
+
+      // evaluate ramp-vehicle accel on main
+      const idmLocalAtCand = localIdmParams(main, candS, idmParamsBase, veh);
+      const { s: sNew, vLead: vLeadNew, aLead: aLeadNew } = gapToLeader(veh, leaderNew, idmLocalAtCand);
+      const accNew = accACC(sNew, veh.v, vLeadNew, aLeadNew, idmLocalAtCand);
+
+      // follower safety (RELAXED compared to before -> more jams)
+      let accLagNew = 0;
+      if (followerNew) {
+        const idmLocalFol = localIdmParams(main, followerNew.s, idmParamsBase, followerNew);
+        const { s: sLagNew, vLead, aLead } = gapFollowerAfterInsert(followerNew, veh, idmLocalFol);
+        accLagNew = accACC(sLagNew, followerNew.v, vLead, aLead, idmLocalFol);
+      }
+
+      // relaxed: allow follower to brake somewhat harder than bSafe
+      const bSafe = bSafeActual(veh.v, mobilParams, idmParamsBase);
+      const safeRelaxed = accLagNew >= -(bSafe + 1.5); // <-- ključ: više “guranja”
+
+      // relaxed gaps (still avoid instant overlap)
+      const gapAheadOk = !leaderNew || (leaderNew.s - veh.s) >= (leaderNew.length + idmLocalAtCand.s0 + 0.5);
+      const gapBehindOk = !followerNew || (veh.s - followerNew.s) >= (veh.length + idmLocalAtCand.s0 + 0.5);
+
+      veh.s = oldS;
+
+      if (!(safeRelaxed && gapAheadOk && gapBehindOk)) continue;
+
+      // choose candidate with best (highest) accNew
+      if (!best || accNew > best.accNew) best = { candS, accNew };
     }
 
-    // rampa: ako je iza rampEnd i još je na rampi, prisilno u merge traku
-    if (
-      veh.lane === state.rampLaneIndex &&
-      veh.x > state.rampEnd
-    ) {
-      veh.lane = state.mainLaneCount - 1; // npr. 2
+    if (best) merged.push({ veh, candS: best.candS });
+  }
+
+  if (merged.length === 0) return;
+
+  merged.sort((a, b) => b.veh.s - a.veh.s);
+
+  for (const { veh, candS } of merged) {
+    const idx = rampLane.indexOf(veh);
+    if (idx >= 0) rampLane.splice(idx, 1);
+
+    veh.roadId = 'main';
+    veh.prevLane = veh.lane;
+    veh.lane = targetLaneIdx;
+    veh.lastLaneChangeTime = net.time;
+    veh.laneChangeStartTime = net.time;
+    veh.s = candS;
+
+    // little "merge disturbance": brief small brake to create wave
+    veh.brakeUntil = Math.max(veh.brakeUntil, net.time + 0.7);
+    veh.extraBrake = -1.2;
+
+    targetLane.push(veh);
+  }
+
+  main.sortLanes();
+}
+
+// -----------------------
+// Phantom jam pulse: periodically force a random car to brake briefly
+// -----------------------
+function maybeTriggerBrakePulse(net) {
+  const ph = net.phantom;
+  if (!ph) return;
+  if (net.time < ph.nextPulseTime) return;
+
+  const main = net.roads.main;
+  const candidates = [];
+
+  // pick cars around/after merge (common jam location)
+  const sMin = net.merge.toS - 30;
+  const sMax = net.merge.toS + 200;
+
+  for (const v of main.allVehicles()) {
+    if (v.s >= sMin && v.s <= sMax && !v.isTruck) candidates.push(v);
+  }
+
+  if (candidates.length > 0) {
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    pick.brakeUntil = net.time + ph.pulseDuration;
+    pick.extraBrake = -ph.pulseDecel;
+  }
+
+  ph.nextPulseTime = net.time + ph.pulseEvery * (0.8 + 0.4 * Math.random());
+}
+
+// -----------------------
+// Integrate + enforce no-overlap
+// -----------------------
+function integrateAndEnforce(net, road, dt, idmParamsBase) {
+  // stronger noise than before -> easier stop&go
+  const noiseAmp = 0.9;
+
+  for (let l = 0; l < road.laneCount; l++) {
+    for (const veh of road.lanes[l]) {
+      const aDet = veh.acc || 0;
+      const noise = (Math.random() - 0.5) * 2 * noiseAmp;
+
+      // extra brake (phantom / merge disturbance)
+      const extra = (net.time < veh.brakeUntil) ? (veh.extraBrake || 0) : 0;
+
+      const a = aDet + noise + extra;
+
+      veh.v = Math.max(0, veh.v + a * dt);
+      veh.s = veh.s + veh.v * dt + 0.5 * a * dt * dt;
+
+      // store for rendering
+      veh.acc = a;
+    }
+  }
+
+  if (road.id === 'ramp') {
+    for (const veh of road.lanes[0]) {
+      if (veh.s > road.length) { veh.s = road.length; veh.v = 0; }
+      if (veh.s < 0) { veh.s = 0; veh.v = 0; }
+    }
+  } else {
+    for (let l = 0; l < road.laneCount; l++) {
+      for (const veh of road.lanes[l]) {
+        if (veh.s < 0) { veh.s = 0; veh.v = Math.min(veh.v, idmParamsBase.v0); }
+      }
+    }
+  }
+
+  // hard no-overlap but less stabilizing (smaller buffer)
+  road.sortLanes();
+  const minSpacing = idmParamsBase.s0 + 0.8;
+  for (let l = 0; l < road.laneCount; l++) {
+    const laneVeh = road.lanes[l];
+    for (let i = 1; i < laneVeh.length; i++) {
+      const follower = laneVeh[i - 1];
+      const leader = laneVeh[i];
+      const desired = leader.s - leader.length - minSpacing;
+      if (follower.s > desired) {
+        follower.s = desired;
+        follower.v = Math.min(follower.v, leader.v);
+      }
     }
   }
 }
 
 // -----------------------
-// Glavna step funkcija
+// Spawn helpers
 // -----------------------
+function randnApprox() {
+  // quick approx normal using sum of uniforms
+  let s = 0;
+  for (let i = 0; i < 6; i++) s += Math.random();
+  return (s - 3); // mean 0
+}
 
-export function step(
-  state,
-  idmParams = defaultIdmParams,
-  mobilParams = defaultMobilParams,
-  dt = 0.1
-) {
-  if (state.time === undefined) state.time = 0;
-  state.time += dt;
+function canSpawnAt(road, lane, sSpawn, minGap) {
+  road.sortLanes();
+  const laneVeh = road.lanes[lane];
+  const { leader } = findNeighborsAtS(laneVeh, sSpawn);
+  if (!leader) return true;
+  return (leader.s - sSpawn) >= (leader.length + minGap);
+}
 
-  calcAccelerations(state, idmParams);
-  changeLanes(state, idmParams, mobilParams);
-  updateSpeedPositions(state, dt);
+export function spawnVehicle(net, road, { id, lane, s, v }) {
+  const h = net.hetero;
+
+  const isTruck = Math.random() < h.truckFraction;
+  const length = isTruck ? h.truckLength : h.carLength;
+
+  // per-vehicle v0 multiplier (cars spread, trucks slower)
+  let v0Mult = 1.0 + h.v0Spread * randnApprox();
+  v0Mult = Math.max(0.70, Math.min(1.30, v0Mult));
+  if (isTruck) v0Mult = Math.min(v0Mult, h.truckV0Mult);
+
+  const veh = new Vehicle({ id, s, v, lane, roadId: road.id, length, v0Mult, isTruck });
+  road.lanes[lane].push(veh);
+  return veh;
+}
+
+function removeExitedMain(mainRoad, buffer = 120) {
+  const maxS = mainRoad.length + buffer;
+  for (let l = 0; l < mainRoad.laneCount; l++) {
+    mainRoad.lanes[l] = mainRoad.lanes[l].filter(v => v.s <= maxS);
+  }
+}
+
+// -----------------------
+// Step
+// -----------------------
+export function stepNetwork(net, idmParamsBase = defaultIdmParams, mobilParams = defaultMobilParams, dt = 0.1) {
+  net.time += dt;
+
+  // phantom pulse before accel calc (so it affects this step)
+  maybeTriggerBrakePulse(net);
+
+  calcAccelerationsForRoad(net.roads.main, idmParamsBase);
+  calcAccelerationsForRoad(net.roads.ramp, idmParamsBase);
+
+  laneChangeMain(net.roads.main, net.time, idmParamsBase, mobilParams);
+  mergeFromRamp(net, idmParamsBase, mobilParams);
+
+  integrateAndEnforce(net, net.roads.main, dt, idmParamsBase);
+  integrateAndEnforce(net, net.roads.ramp, dt, idmParamsBase);
+
+  removeExitedMain(net.roads.main, 120);
+}
+
+export function getAllVehicles(net) {
+  return [...net.roads.main.allVehicles(), ...net.roads.ramp.allVehicles()];
+}
+
+export function trySpawnMain(net, lane, sSpawn, vInit, idCounterRef, minGap = 8) {
+  const main = net.roads.main;
+  if (!canSpawnAt(main, lane, sSpawn, minGap)) return false;
+  spawnVehicle(net, main, { id: idCounterRef.nextId++, lane, s: sSpawn, v: vInit });
+  return true;
+}
+
+export function trySpawnRamp(net, sSpawn, vInit, idCounterRef, minGap = 8) {
+  const ramp = net.roads.ramp;
+  if (!canSpawnAt(ramp, 0, sSpawn, minGap)) return false;
+  spawnVehicle(net, ramp, { id: idCounterRef.nextId++, lane: 0, s: sSpawn, v: vInit });
+  return true;
 }

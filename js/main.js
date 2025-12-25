@@ -1,76 +1,54 @@
 // main.js
-import { step, defaultIdmParams, defaultMobilParams } from './models.js';
+import {
+  createNetwork,
+  stepNetwork,
+  getAllVehicles,
+  trySpawnMain,
+  trySpawnRamp,
+  defaultIdmParams,
+  defaultMobilParams
+} from './models.js';
 
 // ---------------------------
-// 1) Simulacijsko stanje
+// Network
 // ---------------------------
+const net = createNetwork({
+  mainLength: 920,
+  mainLaneCount: 3,
+  rampLength: 140,
 
-const state = {
-  roadLength: 920,   // ukupna dužina prstena u "metrima"
-  laneCount: 4,      // 3 glavne trake + 1 rampa
-  isRing: true,      // glavne trake čine prsten
-  mainLaneCount: 3,  // lane 0,1,2 = glavne
-  rampLaneIndex: 3,  // lane 3 = rampa
-  rampStart: 200,
-  rampEnd: 280,
-  vehicles: []
-};
+  mergeMainS: 470,
+  mergeMainLane: 2,
+  mergeTriggerRampS: 110,
 
-let nextId = 0;
-const baseSpeed = 24; // ~86 km/h
+  curveStartS: 360,
+  curveLength: 200,
+  curveFactor: 0.70,
+  postCurveLength: 80,
+  postCurveFactor: 0.85,
 
-// --- vozila na glavnim trakama ---
-for (let lane = 0; lane < state.mainLaneCount; lane++) {
-  const nCars = 30;
-  for (let k = 0; k < nCars; k++) {
-    const x = (k * state.roadLength) / nCars + lane * 5;
-    const v = baseSpeed + (Math.random() - 0.5) * 4;
+  // ako ti se "prejako" ponaša, kasnije povećaj brakePulseEvery (npr 22)
+  brakePulseEvery: 16.0,
+  brakePulseDuration: 1.6,
+  brakePulseDecel: 3.2
+});
 
-    state.vehicles.push({
-      id: nextId++,
-      x: x % state.roadLength,
-      v,
-      lane,
-      length: 4.5,
-      acc: 0
-    });
-  }
-}
-
-// --- vozila na rampi ---
-const nRampCars = 6;
-for (let k = 0; k < nRampCars; k++) {
-  const x = 130 + (k * (190 - 130)) / (nRampCars - 1); // s u dometu rampe
-  const v = 15 + (Math.random() - 0.5) * 4;
-
-  state.vehicles.push({
-    id: nextId++,
-    x,
-    v,
-    lane: state.rampLaneIndex,
-    length: 4.5,
-    acc: 0
-  });
-}
+const idCounter = { nextId: 0 };
 
 // ---------------------------
-// 2) Canvas i geometrija
+// Canvas + geometry
 // ---------------------------
-
 const canvas = document.getElementById('simCanvas');
 const ctx = canvas.getContext('2d');
-
 const W = canvas.width;
 const H = canvas.height;
 
-// geometrija U-raskrsnice
 const geom = {
-  L: state.roadLength,
+  L: net.roads.main.length,
 
-  // segmenti prstena
   L_bottom: 360,
   L_curve: 200,
-  L_top: state.roadLength - 360 - 200, // = 360
+  L_top: net.roads.main.length - 360 - 200,
 
   xRight: 960,
   xLeft: 260,
@@ -84,54 +62,69 @@ const geom = {
 
   laneOffset: 18,
 
-  // rampa – rotirana nadesno i poravnata s donjom trakom
   ramp: {
-    s0: state.rampStart,
-    s1: state.rampEnd,
-    x0: 580,  // početak rampe
+    x0: 580,
     y0: 610,
-    x1: 440,  // tačka spajanja
+    x1: 440,
     y1: 542
   }
 };
 
 // ---------------------------
-// 3) Mapiranje 1D pozicije -> (x,y)
+// Seed
 // ---------------------------
+function seedVehicles() {
+  net.roads.main.lanes.forEach((arr) => (arr.length = 0));
+  net.roads.ramp.lanes.forEach((arr) => (arr.length = 0));
+  idCounter.nextId = 0;
 
+  const nCarsPerLane = 18;
+  for (let lane = 0; lane < net.roads.main.laneCount; lane++) {
+    for (let k = 0; k < nCarsPerLane; k++) {
+      const s = (k * net.roads.main.length) / nCarsPerLane + lane * 6;
+      const v = defaultIdmParams.v0 * (0.75 + 0.5 * Math.random());
+      trySpawnMain(net, lane, s, v, idCounter, 7);
+    }
+  }
+
+  for (let k = 0; k < 6; k++) {
+    const s = k * 16;
+    const v = 12 + (Math.random() - 0.5) * 3;
+    trySpawnRamp(net, s, v, idCounter, 9);
+  }
+}
+
+seedVehicles();
+
+// ---------------------------
+// Mapping
+// ---------------------------
 function mapMainLane(s, laneIndex) {
   const g = geom;
-  const L = g.L;
-
-  // wrap u [0, L)
-  s = ((s % L) + L) % L;
-
   const { L_bottom, L_curve, L_top } = g;
   let x, y, tangentAngle;
 
+  if (s < 0) s = 0;
+
   if (s < L_bottom) {
-    // donja ravna: desno -> lijevo
     const u = s / L_bottom;
     x = g.xRight - u * (g.xRight - g.xLeft);
     y = g.yBottom;
     tangentAngle = Math.PI;
   } else if (s < L_bottom + L_curve) {
-    // polukružni dio
     const u = (s - L_bottom) / L_curve;
     const theta = Math.PI / 2 + u * Math.PI;
     x = g.cx + g.R * Math.cos(theta);
     y = g.cy + g.R * Math.sin(theta);
     tangentAngle = theta + Math.PI / 2;
   } else {
-    // gornja ravna: lijevo -> desno
     const u = (s - L_bottom - L_curve) / L_top;
     x = g.xLeft + u * (g.xRight - g.xLeft);
     y = g.yTop;
     tangentAngle = 0;
   }
 
-  // lane offset normalno na pravac kretanja
-  const baseLane = 1; // lane 1 = srednja traka
+  const baseLane = 1;
   const offset = (laneIndex - baseLane) * g.laneOffset;
   const nAngle = tangentAngle - Math.PI / 2;
 
@@ -141,9 +134,11 @@ function mapMainLane(s, laneIndex) {
   return { x, y };
 }
 
-function mapRamp(s) {
+function mapRamp(sRamp) {
   const r = geom.ramp;
-  let t = (s - r.s0) / (r.s1 - r.s0);
+  const Lr = net.roads.ramp.length;
+
+  let t = sRamp / Lr;
   t = Math.max(0, Math.min(1, t));
 
   const x = r.x0 + t * (r.x1 - r.x0);
@@ -152,74 +147,42 @@ function mapRamp(s) {
   return { x, y };
 }
 
-// ---------------------------
-// 3a) Lane-change progres i efektivna traka
-// ---------------------------
-
-const LANE_CHANGE_DURATION = 1.2; // s, da bude bas vidljivo
-
-function laneChangeProgress(veh, now) {
-  if (
-    veh.prevLane === undefined ||
-    veh.laneChangeStartTime === undefined
-  ) {
-    return 0;
-  }
-
-  const tau = (now - veh.laneChangeStartTime) / LANE_CHANGE_DURATION;
-
-  if (tau >= 1) {
-    // animacija završena – očisti state
-    veh.prevLane = undefined;
-    veh.laneChangeStartTime = undefined;
-    return 0;
-  }
-
-  return Math.max(0, tau);
+function worldToCanvas(veh) {
+  if (veh.roadId === 'ramp') return mapRamp(veh.s);
+  return mapMainLane(veh.s, veh.lane);
 }
 
-function worldToCanvasWithProgress(veh, tLC) {
-  if (veh.lane === state.rampLaneIndex) {
-    return mapRamp(veh.x);
-  }
+// speed profile (mora match createNetwork)
+const curveStartS = 360;
+const curveLen = 200;
+const postLen = 80;
+function localV0AtS(s, veh, idmParams) {
+  let f = 1.0;
+  if (s >= curveStartS && s <= curveStartS + curveLen) f = 0.70;
+  else if (s > curveStartS + curveLen && s < curveStartS + curveLen + postLen) f = 0.85;
 
-  let laneIdx = veh.lane;
-
-  if (
-    tLC > 0 &&
-    veh.prevLane !== undefined &&
-    veh.prevLane !== veh.lane
-  ) {
-    // glatko pređi sa prevLane na lane
-    laneIdx = veh.prevLane + (veh.lane - veh.prevLane) * tLC;
-  }
-
-  return mapMainLane(veh.x, laneIdx);
+  const v0mult = (veh && typeof veh.v0Mult === 'number') ? veh.v0Mult : 1.0;
+  return Math.max(0.1, idmParams.v0 * f * v0mult);
 }
 
 // ---------------------------
-// 4) Crtanje pozadine
+// Background
 // ---------------------------
-
 function drawBackground() {
   const laneWidth = 18;
   const edgeWidth = 4;
 
-  // trava
   ctx.fillStyle = '#4b7a33';
   ctx.fillRect(0, 0, W, H);
 
-  function strokeRingAtLane(laneIdx, styleCb) {
+  function strokeMainAtLane(laneIdx, styleCb) {
     ctx.beginPath();
     let first = true;
-    for (let s = 0; s <= geom.L; s += 5) {
+    const L = net.roads.main.length;
+    for (let s = 0; s <= L; s += 5) {
       const { x, y } = mapMainLane(s, laneIdx);
-      if (first) {
-        ctx.moveTo(x, y);
-        first = false;
-      } else {
-        ctx.lineTo(x, y);
-      }
+      if (first) { ctx.moveTo(x, y); first = false; }
+      else ctx.lineTo(x, y);
     }
     styleCb();
   }
@@ -227,24 +190,21 @@ function drawBackground() {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // vanjski bijeli rub
-  strokeRingAtLane(1, () => {
+  strokeMainAtLane(1, () => {
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 3 * laneWidth + 2 * edgeWidth;
     ctx.stroke();
   });
 
-  // asfalt
-  strokeRingAtLane(1, () => {
+  strokeMainAtLane(1, () => {
     ctx.strokeStyle = '#555555';
     ctx.lineWidth = 3 * laneWidth;
     ctx.stroke();
   });
 
-  // isprekidane linije između traka
   ctx.setLineDash([24, 18]);
-  [0.5, 1.5].forEach(midLane => {
-    strokeRingAtLane(midLane, () => {
+  [0.5, 1.5].forEach((midLane) => {
+    strokeMainAtLane(midLane, () => {
       ctx.strokeStyle = '#dcdcdc';
       ctx.lineWidth = 2;
       ctx.stroke();
@@ -252,20 +212,15 @@ function drawBackground() {
   });
   ctx.setLineDash([]);
 
-  // --- rampa ---
+  // ramp
   function strokeRamp(style, lineWidth, dashed = false, tEnd = 1.0) {
     ctx.beginPath();
     let first = true;
-    for (let t = 0; t <= tEnd + 1e-3; t += 0.02) {
-      const r = geom.ramp;
-      const x = r.x0 + t * (r.x1 - r.x0);
-      const y = r.y0 + t * (r.y1 - r.y0);
-      if (first) {
-        ctx.moveTo(x, y);
-        first = false;
-      } else {
-        ctx.lineTo(x, y);
-      }
+    const Lr = net.roads.ramp.length;
+    for (let s = 0; s <= Lr * tEnd + 1e-3; s += 2) {
+      const { x, y } = mapRamp(s);
+      if (first) { ctx.moveTo(x, y); first = false; }
+      else ctx.lineTo(x, y);
     }
     ctx.strokeStyle = style;
     ctx.lineWidth = lineWidth;
@@ -274,120 +229,227 @@ function drawBackground() {
     if (dashed) ctx.setLineDash([]);
   }
 
-  // rub rampe – kraće
-  strokeRamp('#ffffff', laneWidth + 2 * edgeWidth, false, 0.8);
-
-  // tijelo rampe – malo duže
-  strokeRamp('#555555', laneWidth - 2, false, 0.92);
+  strokeRamp('#ffffff', laneWidth + 2 * edgeWidth, false, 0.85);
+  strokeRamp('#555555', laneWidth - 2, false, 0.95);
 }
 
 // ---------------------------
-// 5) Boje i crtanje vozila (sa promjenom boje)
+// Vehicles: color by speed + brake lights (SVE ISTE VELIČINE)
 // ---------------------------
-
-function hexToRgb(hex) {
-  const h = hex.replace('#', '');
-  const bigint = parseInt(h, 16);
-  const r = (bigint >> 16) & 255;
-  const g = (bigint >> 8) & 255;
-  const b = bigint & 255;
-  return { r, g, b };
-}
-
-function rgbToHex(r, g, b) {
-  const toHex = (x) => x.toString(16).padStart(2, '0');
-  return '#' + toHex(r) + toHex(g) + toHex(b);
-}
-
-function lerpColor(c1, c2, t) {
-  const a = hexToRgb(c1);
-  const b = hexToRgb(c2);
-  const r = Math.round(a.r + (b.r - a.r) * t);
-  const g = Math.round(a.g + (b.g - a.g) * t);
-  const b2 = Math.round(a.b + (b.b - a.b) * t);
-  return rgbToHex(r, g, b2);
-}
-
-function baseColorForLane(lane) {
-  if (lane === state.rampLaneIndex) return '#ffcc00'; // rampa
-  if (lane === 0) return '#4caf50';
-  if (lane === 1) return '#2196f3';
-  return '#e91e63';
+function speedColor(ratio) {
+  if (ratio < 0.35) return '#d32f2f';   // crveno
+  if (ratio < 0.65) return '#fbc02d';   // žuto
+  return '#2e7d32';                    // zeleno
 }
 
 function drawVehicles() {
-  for (const veh of state.vehicles) {
-    const tLC = laneChangeProgress(veh, simTime);
-    const { x, y } = worldToCanvasWithProgress(veh, tLC);
+  const vehicles = getAllVehicles(net);
 
-    // boja: ako mijenja traku → blend između osnovne boje i bijele
-    const baseColor = baseColorForLane(veh.lane);
-    let fillColor = baseColor;
+  for (const veh of vehicles) {
+    const { x, y } = worldToCanvas(veh);
+    const radius = 6; // <-- sve iste tačkice
 
-    if (tLC > 0) {
-      // prvo pola vremena ide prema bijeloj, drugo pola se vraća
-      const tBlink = tLC < 0.5 ? tLC * 2 : (1 - tLC) * 2;
-      fillColor = lerpColor(baseColor, '#ffffff', tBlink);
+    let fill;
+    if (veh.roadId === 'ramp') {
+      fill = '#ffcc00';
+    } else {
+      const v0loc = localV0AtS(veh.s, veh, idmParams);
+      const ratio = veh.v / v0loc;
+      fill = speedColor(ratio);
     }
 
     ctx.beginPath();
-    ctx.arc(x, y, 6, 0, 2 * Math.PI);
-    ctx.fillStyle = fillColor;
+    ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    ctx.fillStyle = fill;
     ctx.fill();
 
-    // ako mijenja traku, daj mu jači crni outline
-    ctx.lineWidth = tLC > 0 ? 2 : 1;
+    ctx.lineWidth = 1;
     ctx.strokeStyle = '#000';
     ctx.stroke();
+
+    // brake ring kad koče
+    if (veh.acc < -1.0 && veh.roadId === 'main') {
+      ctx.beginPath();
+      ctx.arc(x, y, radius + 2, 0, 2 * Math.PI);
+      ctx.strokeStyle = 'rgba(255,0,0,0.55)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
   }
 }
 
-// ---------------------------
-// 6) Maska desne strane (da ništa ne vidimo tamo)
-// ---------------------------
-
 function maskRightSide() {
-  const maskStart = geom.xRight - 40; // po potrebi promijeni na 20–40
+  const maskStart = geom.xRight - 40;
   ctx.fillStyle = '#4b7a33';
   ctx.fillRect(maskStart, 0, W - maskStart, H);
 }
 
 // ---------------------------
-// 7) Simulacijska petlja
+// Params + inflow
 // ---------------------------
-
 const idmParams = { ...defaultIdmParams };
 const mobilParams = { ...defaultMobilParams };
 
-let lastTime = performance.now();
-let simTime = 0;
-const dt = 0.1;
-let accumulator = 0;
+// defaulti koji lakše naprave stop&go
+let mainInflowPerHour = 5600;
+let rampInflowPerHour = 1400;
 
-function renderFrame() {
-  ctx.clearRect(0, 0, W, H);
-  drawBackground();
-  drawVehicles();
-  maskRightSide(); // NA KRAJU: sakrij desni dio (put + auta)
+const mainSpawnAccumulators = new Array(net.roads.main.laneCount).fill(0);
+let rampSpawnAccumulator = 0;
+
+function spawnMainVehicles(dt) {
+  const totalRatePerSec = mainInflowPerHour / 3600;
+  if (totalRatePerSec <= 0) return;
+
+  // ✅ FIX: tačan laneCount
+  const laneRatePerSec = totalRatePerSec / net.roads.main.laneCount;
+  const sSpawn = 10;
+
+  for (let lane = 0; lane < net.roads.main.laneCount; lane++) {
+    mainSpawnAccumulators[lane] += laneRatePerSec * dt;
+
+    while (mainSpawnAccumulators[lane] >= 1.0) {
+      const vInit = idmParams.v0 * (0.85 + 0.35 * Math.random());
+      const ok = trySpawnMain(net, lane, sSpawn, vInit, idCounter, 7);
+      if (!ok) break;
+      mainSpawnAccumulators[lane] -= 1.0;
+    }
+  }
 }
 
-function loop(timestamp) {
-  const frameTime = (timestamp - lastTime) / 1000;
-  lastTime = timestamp;
+function spawnRampVehicles(dt) {
+  const ratePerSec = rampInflowPerHour / 3600;
+  if (ratePerSec <= 0) return;
 
-  const clamped = Math.min(frameTime, 0.25);
-  accumulator += clamped;
+  rampSpawnAccumulator += ratePerSec * dt;
 
-  while (accumulator >= dt) {
-    step(state, idmParams, mobilParams, dt);
-    simTime += dt;
-    accumulator -= dt;
+  while (rampSpawnAccumulator >= 1.0) {
+    const vInit = idmParams.v0 * (0.55 + 0.25 * Math.random());
+    const ok = trySpawnRamp(net, 0, vInit, idCounter, 9);
+    if (!ok) break;
+    rampSpawnAccumulator -= 1.0;
+  }
+}
+
+// ---------------------------
+// UI sliders (optional)
+// ---------------------------
+function setupSliders() {
+  const byId = (id) => document.getElementById(id);
+
+  const v0Slider = byId('v0Slider');
+  const TSlider = byId('TSlider');
+  const aSlider = byId('aSlider');
+  const bSlider = byId('bSlider');
+  const pSlider = byId('pSlider');
+  const thrSlider = byId('thrSlider');
+  const mainInflowSlider = byId('mainInflowSlider');
+  const rampInflowSlider = byId('rampInflowSlider');
+
+  const v0Value = byId('v0Value');
+  const TValue = byId('TValue');
+  const aValue = byId('aValue');
+  const bValue = byId('bValue');
+  const pValue = byId('pValue');
+  const thrValue = byId('thrValue');
+  const mainInflowValue = byId('mainInflowValue');
+  const rampInflowValue = byId('rampInflowValue');
+
+  if (!v0Slider || !TSlider || !aSlider || !bSlider ||
+      !pSlider || !thrSlider || !mainInflowSlider || !rampInflowSlider) {
+    return;
   }
 
-  renderFrame();
+  v0Slider.value = (idmParams.v0 * 3.6).toFixed(0);
+  TSlider.value = idmParams.T.toFixed(1);
+  aSlider.value = idmParams.a.toFixed(1);
+  bSlider.value = idmParams.b.toFixed(1);
+  pSlider.value = mobilParams.p.toFixed(2);
+  thrSlider.value = mobilParams.bThr.toFixed(2);
+  mainInflowSlider.value = mainInflowPerHour.toFixed(0);
+  rampInflowSlider.value = rampInflowPerHour.toFixed(0);
+
+  function updateV0() {
+    const kmh = Number(v0Slider.value);
+    idmParams.v0 = kmh / 3.6;
+    if (v0Value) v0Value.textContent = `${kmh.toFixed(0)} km/h`;
+  }
+  function updateT() {
+    const val = Number(TSlider.value);
+    idmParams.T = val;
+    if (TValue) TValue.textContent = val.toFixed(1);
+  }
+  function updateA() {
+    const val = Number(aSlider.value);
+    idmParams.a = val;
+    if (aValue) aValue.textContent = val.toFixed(1);
+  }
+  function updateB() {
+    const val = Number(bSlider.value);
+    idmParams.b = val;
+    if (bValue) bValue.textContent = val.toFixed(1);
+  }
+  function updateP() {
+    const val = Number(pSlider.value);
+    mobilParams.p = val;
+    if (pValue) pValue.textContent = val.toFixed(2);
+  }
+  function updateThr() {
+    const val = Number(thrSlider.value);
+    mobilParams.bThr = val;
+    if (thrValue) thrValue.textContent = val.toFixed(2);
+  }
+  function updateMainInflow() {
+    const val = Number(mainInflowSlider.value);
+    mainInflowPerHour = val;
+    if (mainInflowValue) mainInflowValue.textContent = `${val.toFixed(0)} veh/h`;
+  }
+  function updateRampInflow() {
+    const val = Number(rampInflowSlider.value);
+    rampInflowPerHour = val;
+    if (rampInflowValue) rampInflowValue.textContent = `${val.toFixed(0)} veh/h`;
+  }
+
+  v0Slider.addEventListener('input', updateV0);
+  TSlider.addEventListener('input', updateT);
+  aSlider.addEventListener('input', updateA);
+  bSlider.addEventListener('input', updateB);
+  pSlider.addEventListener('input', updateP);
+  thrSlider.addEventListener('input', updateThr);
+  mainInflowSlider.addEventListener('input', updateMainInflow);
+  rampInflowSlider.addEventListener('input', updateRampInflow);
+
+  updateV0(); updateT(); updateA(); updateB();
+  updateP(); updateThr();
+  updateMainInflow(); updateRampInflow();
+}
+
+setupSliders();
+
+// ---------------------------
+// Loop
+// ---------------------------
+let lastTs = null;
+
+function loop(ts) {
+  if (lastTs === null) lastTs = ts;
+  const realDt = (ts - lastTs) / 1000;
+  lastTs = ts;
+
+  const dt = 0.1;
+  const nSteps = Math.max(1, Math.min(10, Math.round(realDt / dt)));
+
+  for (let i = 0; i < nSteps; i++) {
+    spawnMainVehicles(dt);
+    spawnRampVehicles(dt);
+    stepNetwork(net, idmParams, mobilParams, dt);
+  }
+
+  drawBackground();
+  drawVehicles();
+  maskRightSide();
+
   requestAnimationFrame(loop);
 }
 
-// start
-renderFrame();
 requestAnimationFrame(loop);

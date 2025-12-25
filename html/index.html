@@ -13,31 +13,93 @@
       flex-direction: column;
       align-items: center;
       justify-content: flex-start;
-      height: 100vh;
+      min-height: 100vh;
     }
 
-    h1 {
-      margin: 16px 0 4px;
-      font-size: 18px;
-    }
+    h1 { margin: 16px 0 4px; font-size: 18px; }
+    #info { font-size: 13px; margin-bottom: 8px; opacity: 0.8; }
 
-    #info {
-      font-size: 13px;
-      margin-bottom: 8px;
-      opacity: 0.8;
+    #controls{
+      width: 1280px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px 14px;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      background:#0d0d0d;
+      border: 1px solid #222;
+      border-radius: 10px;
+      margin-bottom: 10px;
     }
+    .ctrl{
+      display:flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+    }
+    .row{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+    }
+    input[type="range"]{ width: 100%; }
+    .val{ opacity: .85; min-width: 80px; text-align:right; font-variant-numeric: tabular-nums; }
 
     canvas {
       border: 1px solid #333;
-      background: #000; /* sve ćemo crtati u JS-u */
+      background: #000;
     }
   </style>
 </head>
 <body>
   <h1>Phantom Flow – U-raskrsnica s rampom</h1>
   <div id="info">IDM + MOBIL, 3 trake + ulazna rampa</div>
+
+  <div id="controls">
+    <div class="ctrl">
+      <div class="row"><div>V0</div><div class="val" id="v0Value"></div></div>
+      <input id="v0Slider" type="range" min="40" max="140" step="1">
+    </div>
+
+    <div class="ctrl">
+      <div class="row"><div>T</div><div class="val" id="TValue"></div></div>
+      <input id="TSlider" type="range" min="0.8" max="3.0" step="0.1">
+    </div>
+
+    <div class="ctrl">
+      <div class="row"><div>a</div><div class="val" id="aValue"></div></div>
+      <input id="aSlider" type="range" min="0.3" max="3.0" step="0.1">
+    </div>
+
+    <div class="ctrl">
+      <div class="row"><div>b</div><div class="val" id="bValue"></div></div>
+      <input id="bSlider" type="range" min="0.5" max="4.0" step="0.1">
+    </div>
+
+    <div class="ctrl">
+      <div class="row"><div>Politeness p</div><div class="val" id="pValue"></div></div>
+      <input id="pSlider" type="range" min="0" max="1" step="0.01">
+    </div>
+
+    <div class="ctrl">
+      <div class="row"><div>Incentive thr</div><div class="val" id="thrValue"></div></div>
+      <input id="thrSlider" type="range" min="0" max="1" step="0.01">
+    </div>
+
+    <div class="ctrl">
+      <div class="row"><div>Main inflow</div><div class="val" id="mainInflowValue"></div></div>
+      <input id="mainInflowSlider" type="range" min="0" max="9000" step="50">
+    </div>
+
+    <div class="ctrl">
+      <div class="row"><div>Ramp inflow</div><div class="val" id="rampInflowValue"></div></div>
+      <input id="rampInflowSlider" type="range" min="0" max="4000" step="50">
+    </div>
+  </div>
+
   <canvas id="simCanvas" width="1280" height="720"></canvas>
 
+  <!-- VAŽNO: putanja -->
   <script type="module" src="../js/main.js"></script>
 </body>
 </html>
