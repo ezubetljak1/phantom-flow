@@ -11,6 +11,19 @@ import {
 } from './models.js';
 
 // ---------------------------
+// Scenario router (?scenario=main | roundabout)
+// Default: main (U-raskrsnica)
+// ---------------------------
+const __SCENARIO__ = new URLSearchParams(window.location.search).get('scenario') || 'main';
+
+if (__SCENARIO__ === 'roundabout') {
+  import('./roundabout.js')
+    .then(m => m.runRoundabout())
+    .catch(err => console.error('Failed to load roundabout scenario:', err));
+} else {
+
+
+// ---------------------------
 // Seeded RNG (from URL ?seed=...)
 // ---------------------------
 function hashSeed(seed) {
@@ -1252,3 +1265,5 @@ function drawDetectors() {
 
 initDetectors();
 requestAnimationFrame(loop);
+
+}

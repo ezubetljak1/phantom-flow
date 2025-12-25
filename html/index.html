@@ -60,6 +60,21 @@
     button:active { transform: translateY(1px); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+
+    a.btnLink{
+      display:inline-block;
+      padding:8px 10px;
+      border-radius:8px;
+      border:1px solid #333;
+      background:#181818;
+      color:#eee;
+      text-decoration:none;
+      font-size:12px;
+      margin-right:8px;
+    }
+    a.btnLink:hover{ background:#222; }
+
+
     canvas {
       border: 1px solid #333;
       background: #000;
@@ -71,6 +86,16 @@
   <div id="info">IDM + MOBIL, 3 trake + ulazna rampa</div>
 
   <div id="controls">
+
+    <!-- NEW: Scenario switch -->
+    <div class="ctrl">
+      <div class="row"><div>Scenario</div><div class="val" id="scenarioValue">U-raskrsnica</div></div>
+      <div class="row">
+        <a class="btnLink" href="?scenario=main">U-raskrsnica</a>
+        <a class="btnLink" href="?scenario=roundabout">Kružna</a>
+      </div>
+    </div>
+
 
     <!-- NEW: Sim controls -->
     <div class="ctrl">
@@ -123,6 +148,16 @@
       <div class="row"><div>Ramp inflow</div><div class="val" id="rampInflowValue"></div></div>
       <input id="rampInflowSlider" type="range" min="0" max="4000" step="50">
     </div>
+
+    <!-- NEW: Roundabout controls (only used when ?scenario=roundabout) -->
+    <div class="ctrl" id="ringCtrl">
+      <div class="row"><div>Vozila / traka</div><div class="val" id="ringCountValue">20</div></div>
+      <input id="ringCountSlider" type="range" min="0" max="80" step="1">
+      <div class="row" style="margin-top:6px;">
+        <button id="brakePulseBtn" type="button">Random kočenje</button>
+      </div>
+    </div>
+
 
     <div class="ctrl">
   <div class="row"><div><b>Detektori</b> (prozor 30s)</div><div class="val"></div></div>
