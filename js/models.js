@@ -401,21 +401,21 @@ function changeLanes(state, accParams, mobilParams) {
     }
   }
 
+  // primijeni lane-change (BITNO za animaciju!)
+  // primjena lane-change odluka
   for (const { veh, newLane } of laneChanges) {
-    // zapamti staru traku – potrebno za animaciju
+    // zapamti staru traku – koristi se za animaciju
     veh.prevLane = veh.lane;
 
-    // postavi novu traku (fizički je već "prešao")
+    // nova traka
     veh.lane = newLane;
 
-    // za MOBIL cooldown (da ne skače stalno)
+    // vrijeme zadnjeg lane-change-a (za cooldown + animaciju)
     veh.lastLaneChangeTime = now;
-
-    // za vizuelnu animaciju (slide + promjena boje)
     veh.laneChangeStartTime = now;
+  }
 }
 
-}
 
 // -----------------------
 // 3) Update brzina i pozicija
@@ -423,13 +423,15 @@ function changeLanes(state, accParams, mobilParams) {
 
 function updateSpeedPositions(state, dt) {
   const L = state.roadLength;
+  const noiseAmp = 0.5; // ~m/s^2, poigraj se 0.2–1.0
 
   for (const veh of state.vehicles) {
-    // ballistic integracija
-    // v(t+dt) = v + a*dt
-    // x(t+dt) = x + v*dt + 0.5*a*dt^2
+    const aDet = veh.acc || 0;
 
-    const a = veh.acc || 0;
+    // mali random “gas/kočenje”
+    const noise = (Math.random() - 0.5) * 2 * noiseAmp;
+    const a = aDet + noise;
+
     veh.v = Math.max(0, veh.v + a * dt);
     veh.x = veh.x + veh.v * dt + 0.5 * a * dt * dt;
 
@@ -447,6 +449,7 @@ function updateSpeedPositions(state, dt) {
     }
   }
 }
+
 
 // -----------------------
 // Glavna step funkcija

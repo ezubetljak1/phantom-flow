@@ -6,9 +6,9 @@ import { step, defaultIdmParams, defaultMobilParams } from './models.js';
 // ---------------------------
 
 const state = {
-  roadLength: 920,   // ukupna dužina prstena u "metrima"
+  roadLength: 920,   // dužina puta u "metrima"
   laneCount: 4,      // 3 glavne trake + 1 rampa
-  isRing: true,      // glavne trake čine prsten
+  isRing: false,     // otvorena U-raskrsnica sa ulazom i izlazom
   mainLaneCount: 3,  // lane 0,1,2 = glavne
   rampLaneIndex: 3,  // lane 3 = rampa
   rampStart: 200,
@@ -17,41 +17,10 @@ const state = {
 };
 
 let nextId = 0;
-const baseSpeed = 24; // ~86 km/h
 
-// --- vozila na glavnim trakama ---
-for (let lane = 0; lane < state.mainLaneCount; lane++) {
-  const nCars = 30;
-  for (let k = 0; k < nCars; k++) {
-    const x = (k * state.roadLength) / nCars + lane * 5;
-    const v = baseSpeed + (Math.random() - 0.5) * 4;
-
-    state.vehicles.push({
-      id: nextId++,
-      x: x % state.roadLength,
-      v,
-      lane,
-      length: 4.5,
-      acc: 0
-    });
-  }
-}
-
-// --- vozila na rampi ---
-const nRampCars = 6;
-for (let k = 0; k < nRampCars; k++) {
-  const x = 130 + (k * (190 - 130)) / (nRampCars - 1); // s u dometu rampe
-  const v = 15 + (Math.random() - 0.5) * 4;
-
-  state.vehicles.push({
-    id: nextId++,
-    x,
-    v,
-    lane: state.rampLaneIndex,
-    length: 4.5,
-    acc: 0
-  });
-}
+// početni broj vozila po glavnoj traci (seed gustina)
+const initialMainCarsPerLane = 25;
+const initialRampCars = 6;
 
 // ---------------------------
 // 2) Canvas i geometrija
@@ -67,7 +36,7 @@ const H = canvas.height;
 const geom = {
   L: state.roadLength,
 
-  // segmenti prstena
+  // segmenti puta
   L_bottom: 360,
   L_curve: 200,
   L_top: state.roadLength - 360 - 200, // = 360
@@ -84,30 +53,74 @@ const geom = {
 
   laneOffset: 18,
 
-  // rampa – rotirana nadesno i poravnata s donjom trakom
+  // rampa – uvučena nadesno i poravnata s donjom trakom
   ramp: {
     s0: state.rampStart,
     s1: state.rampEnd,
-    x0: 580,  // početak rampe
+    x0: 580,  // početak rampe (dolje desno)
     y0: 610,
-    x1: 440,  // tačka spajanja
+    x1: 440,  // tačka spajanja u vanjsku traku
     y1: 542
   }
 };
 
 // ---------------------------
-// 3) Mapiranje 1D pozicije -> (x,y)
+// 3) Inicializacija vozila
+// ---------------------------
+
+function seedVehicles() {
+  state.vehicles = [];
+  nextId = 0;
+
+  const baseSpeed = defaultIdmParams.v0; // m/s
+
+  // glavne trake – ravnomjerno raspoređeni
+  for (let lane = 0; lane < state.mainLaneCount; lane++) {
+    const nCars = initialMainCarsPerLane;
+    for (let k = 0; k < nCars; k++) {
+      const s = (k * state.roadLength) / nCars + lane * 5;
+      const v = baseSpeed * (0.8 + 0.4 * Math.random());
+
+      state.vehicles.push({
+        id: nextId++,
+        x: s,
+        v,
+        lane,
+        length: 4.5,
+        acc: 0
+      });
+    }
+  }
+
+  // par vozila na rampi da ne bude prazna na početku
+  for (let k = 0; k < initialRampCars; k++) {
+    const s = 130 + (k * (190 - 130)) / (initialRampCars - 1); // ispred rampe
+    const v = 15 + (Math.random() - 0.5) * 4;
+
+    state.vehicles.push({
+      id: nextId++,
+      x: s,
+      v,
+      lane: state.rampLaneIndex,
+      length: 4.5,
+      acc: 0
+    });
+  }
+}
+
+seedVehicles();
+
+// ---------------------------
+// 4) Mapiranje 1D pozicije -> (x,y)
 // ---------------------------
 
 function mapMainLane(s, laneIndex) {
   const g = geom;
-  const L = g.L;
-
-  // wrap u [0, L)
-  s = ((s % L) + L) % L;
-
   const { L_bottom, L_curve, L_top } = g;
   let x, y, tangentAngle;
+
+  // otvoreni put: ne radimo wrap, samo clamp na 0
+  if (s < 0) s = 0;
 
   if (s < L_bottom) {
     // donja ravna: desno -> lijevo
@@ -116,7 +129,7 @@ function mapMainLane(s, laneIndex) {
     y = g.yBottom;
     tangentAngle = Math.PI;
   } else if (s < L_bottom + L_curve) {
-    // polukružni dio
+    // polukružno
     const u = (s - L_bottom) / L_curve;
     const theta = Math.PI / 2 + u * Math.PI;
     x = g.cx + g.R * Math.cos(theta);
@@ -152,53 +165,15 @@ function mapRamp(s) {
   return { x, y };
 }
 
-// ---------------------------
-// 3a) Lane-change progres i efektivna traka
-// ---------------------------
-
-const LANE_CHANGE_DURATION = 1.2; // s, da bude bas vidljivo
-
-function laneChangeProgress(veh, now) {
-  if (
-    veh.prevLane === undefined ||
-    veh.laneChangeStartTime === undefined
-  ) {
-    return 0;
-  }
-
-  const tau = (now - veh.laneChangeStartTime) / LANE_CHANGE_DURATION;
-
-  if (tau >= 1) {
-    // animacija završena – očisti state
-    veh.prevLane = undefined;
-    veh.laneChangeStartTime = undefined;
-    return 0;
-  }
-
-  return Math.max(0, tau);
-}
-
-function worldToCanvasWithProgress(veh, tLC) {
+function worldToCanvas(veh) {
   if (veh.lane === state.rampLaneIndex) {
     return mapRamp(veh.x);
   }
-
-  let laneIdx = veh.lane;
-
-  if (
-    tLC > 0 &&
-    veh.prevLane !== undefined &&
-    veh.prevLane !== veh.lane
-  ) {
-    // glatko pređi sa prevLane na lane
-    laneIdx = veh.prevLane + (veh.lane - veh.prevLane) * tLC;
-  }
-
-  return mapMainLane(veh.x, laneIdx);
+  return mapMainLane(veh.x, veh.lane);
 }
 
 // ---------------------------
-// 4) Crtanje pozadine
+// 5) Crtanje pozadine
 // ---------------------------
 
 function drawBackground() {
@@ -282,93 +257,264 @@ function drawBackground() {
 }
 
 // ---------------------------
-// 5) Boje i crtanje vozila (sa promjenom boje)
+// 6) Crtanje vozila
 // ---------------------------
-
-function hexToRgb(hex) {
-  const h = hex.replace('#', '');
-  const bigint = parseInt(h, 16);
-  const r = (bigint >> 16) & 255;
-  const g = (bigint >> 8) & 255;
-  const b = bigint & 255;
-  return { r, g, b };
-}
-
-function rgbToHex(r, g, b) {
-  const toHex = (x) => x.toString(16).padStart(2, '0');
-  return '#' + toHex(r) + toHex(g) + toHex(b);
-}
-
-function lerpColor(c1, c2, t) {
-  const a = hexToRgb(c1);
-  const b = hexToRgb(c2);
-  const r = Math.round(a.r + (b.r - a.r) * t);
-  const g = Math.round(a.g + (b.g - a.g) * t);
-  const b2 = Math.round(a.b + (b.b - a.b) * t);
-  return rgbToHex(r, g, b2);
-}
-
-function baseColorForLane(lane) {
-  if (lane === state.rampLaneIndex) return '#ffcc00'; // rampa
-  if (lane === 0) return '#4caf50';
-  if (lane === 1) return '#2196f3';
-  return '#e91e63';
-}
 
 function drawVehicles() {
   for (const veh of state.vehicles) {
-    const tLC = laneChangeProgress(veh, simTime);
-    const { x, y } = worldToCanvasWithProgress(veh, tLC);
-
-    // boja: ako mijenja traku → blend između osnovne boje i bijele
-    const baseColor = baseColorForLane(veh.lane);
-    let fillColor = baseColor;
-
-    if (tLC > 0) {
-      // prvo pola vremena ide prema bijeloj, drugo pola se vraća
-      const tBlink = tLC < 0.5 ? tLC * 2 : (1 - tLC) * 2;
-      fillColor = lerpColor(baseColor, '#ffffff', tBlink);
-    }
+    const { x, y } = worldToCanvas(veh);
 
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, 2 * Math.PI);
-    ctx.fillStyle = fillColor;
-    ctx.fill();
 
-    // ako mijenja traku, daj mu jači crni outline
-    ctx.lineWidth = tLC > 0 ? 2 : 1;
+    if (veh.lane === state.rampLaneIndex) {
+      ctx.fillStyle = '#ffcc00'; // rampa
+    } else if (veh.lane === 0) {
+      ctx.fillStyle = '#4caf50';
+    } else if (veh.lane === 1) {
+      ctx.fillStyle = '#2196f3';
+    } else {
+      ctx.fillStyle = '#e91e63';
+    }
+
+    ctx.fill();
+    ctx.lineWidth = 1;
     ctx.strokeStyle = '#000';
     ctx.stroke();
   }
 }
 
 // ---------------------------
-// 6) Maska desne strane (da ništa ne vidimo tamo)
+// 7) Maska desne strane (da ne vidimo izlaz)
 // ---------------------------
 
 function maskRightSide() {
-  const maskStart = geom.xRight - 40; // po potrebi promijeni na 20–40
+  const maskStart = geom.xRight - 40; // sakrij zadnjih ~40px
   ctx.fillStyle = '#4b7a33';
   ctx.fillRect(maskStart, 0, W - maskStart, H);
 }
 
 // ---------------------------
-// 7) Simulacijska petlja
+// 8) Dinamički inflow / outflow
 // ---------------------------
 
+// Car-following i lane-change parametri (kopija defaulta)
 const idmParams = { ...defaultIdmParams };
 const mobilParams = { ...defaultMobilParams };
 
+// inflow parametri (vozila / sat)
+let mainInflowPerHour = 3600; // ~1000 veh/h po traci
+let rampInflowPerHour = 600;
+
+const mainSpawnAccumulators = new Array(state.mainLaneCount).fill(0);
+let rampSpawnAccumulator = 0;
+
+// pokušaj ubacivanja vozila na glavnoj traci
+function trySpawnOnMain(lane, sSpawn, speed) {
+  const minGap = 8; // minimalni razmak (m) do postojećih vozila na ulazu
+  const laneVeh = state.vehicles.filter(v => v.lane === lane);
+
+  for (const v of laneVeh) {
+    if (Math.abs(v.x - sSpawn) < minGap) return false;
+  }
+
+  state.vehicles.push({
+    id: nextId++,
+    x: sSpawn,
+    v: speed,
+    lane,
+    length: 4.5,
+    acc: 0
+  });
+  return true;
+}
+
+function spawnMainVehicles(dt) {
+  const totalRatePerSec = mainInflowPerHour / 3600;
+  if (totalRatePerSec <= 0) return;
+
+  const laneRatePerSec = totalRatePerSec / state.mainLaneCount;
+  const sSpawn = 10; // ulaz malo iza maskiranog dijela
+
+  for (let lane = 0; lane < state.mainLaneCount; lane++) {
+    mainSpawnAccumulators[lane] += laneRatePerSec * dt;
+
+    while (mainSpawnAccumulators[lane] >= 1.0) {
+      const vInit = idmParams.v0 * (0.8 + 0.4 * Math.random());
+      const ok = trySpawnOnMain(lane, sSpawn, vInit);
+      if (!ok) {
+        // ulaz je blokiran – čekaćemo sljedeći put
+        break;
+      }
+      mainSpawnAccumulators[lane] -= 1.0;
+    }
+  }
+}
+
+// ubacivanje vozila na rampu
+function trySpawnOnRamp(sSpawn, speed) {
+  const minGap = 8;
+  const laneVeh = state.vehicles.filter(
+    v => v.lane === state.rampLaneIndex
+  );
+
+  for (const v of laneVeh) {
+    if (Math.abs(v.x - sSpawn) < minGap) return false;
+  }
+
+  state.vehicles.push({
+    id: nextId++,
+    x: sSpawn,
+    v: speed,
+    lane: state.rampLaneIndex,
+    length: 4.5,
+    acc: 0
+  });
+  return true;
+}
+
+function spawnRampVehicles(dt) {
+  const ratePerSec = rampInflowPerHour / 3600;
+  if (ratePerSec <= 0) return;
+
+  rampSpawnAccumulator += ratePerSec * dt;
+
+  const sMin = state.rampStart - 80;
+  const sMax = state.rampStart - 10;
+
+  while (rampSpawnAccumulator >= 1.0) {
+    const sSpawn = sMin + Math.random() * (sMax - sMin);
+    const vInit = 15 + (Math.random() - 0.5) * 3;
+
+    const ok = trySpawnOnRamp(sSpawn, vInit);
+    if (!ok) {
+      break;
+    }
+    rampSpawnAccumulator -= 1.0;
+  }
+}
+
+// brisanje vozila koja su “izašla” iz modela
+function removeExitedVehicles() {
+  const maxS = state.roadLength + 120;
+  state.vehicles = state.vehicles.filter(veh => veh.x <= maxS);
+}
+
+// ---------------------------
+// 9) UI – slideri
+// ---------------------------
+
+function setupSliders() {
+  const byId = (id) => document.getElementById(id);
+
+  const v0Slider = byId('v0Slider');
+  const v0Value  = byId('v0Value');
+  const TSlider  = byId('TSlider');
+  const TValue   = byId('TValue');
+  const aSlider  = byId('aSlider');
+  const aValue   = byId('aValue');
+  const bSlider  = byId('bSlider');
+  const bValue   = byId('bValue');
+
+  const pSlider   = byId('pSlider');
+  const pValue    = byId('pValue');
+  const thrSlider = byId('thrSlider');
+  const thrValue  = byId('thrValue');
+
+  const mainInflowSlider = byId('mainInflowSlider');
+  const mainInflowValue  = byId('mainInflowValue');
+  const rampInflowSlider = byId('rampInflowSlider');
+  const rampInflowValue  = byId('rampInflowValue');
+
+  // inicijalne vrijednosti slidera
+  v0Slider.value = (idmParams.v0 * 3.6).toFixed(0);
+  TSlider.value  = idmParams.T.toFixed(1);
+  aSlider.value  = idmParams.a.toFixed(1);
+  bSlider.value  = idmParams.b.toFixed(1);
+
+  pSlider.value   = mobilParams.p.toFixed(2);
+  thrSlider.value = mobilParams.bThr.toFixed(2);
+
+  mainInflowSlider.value = mainInflowPerHour.toFixed(0);
+  rampInflowSlider.value = rampInflowPerHour.toFixed(0);
+
+  function updateV0() {
+    const kmh = Number(v0Slider.value);
+    idmParams.v0 = kmh / 3.6;
+    v0Value.textContent = kmh.toFixed(0) + ' km/h';
+  }
+  function updateT() {
+    const T = Number(TSlider.value);
+    idmParams.T = T;
+    TValue.textContent = T.toFixed(1) + ' s';
+  }
+  function updateA() {
+    const a = Number(aSlider.value);
+    idmParams.a = a;
+    aValue.textContent = a.toFixed(1) + ' m/s²';
+  }
+  function updateB() {
+    const b = Number(bSlider.value);
+    idmParams.b = b;
+    bValue.textContent = b.toFixed(1) + ' m/s²';
+  }
+  function updateP() {
+    const p = Number(pSlider.value);
+    mobilParams.p = p;
+    pValue.textContent = p.toFixed(2);
+  }
+  function updateThr() {
+    const thr = Number(thrSlider.value);
+    mobilParams.bThr = thr;
+    thrValue.textContent = thr.toFixed(2) + ' m/s²';
+  }
+  function updateMainInflow() {
+    mainInflowPerHour = Number(mainInflowSlider.value);
+    mainInflowValue.textContent =
+      mainInflowPerHour.toFixed(0) + ' veh/h';
+  }
+  function updateRampInflow() {
+    rampInflowPerHour = Number(rampInflowSlider.value);
+    rampInflowValue.textContent =
+      rampInflowPerHour.toFixed(0) + ' veh/h';
+  }
+
+  v0Slider.addEventListener('input', updateV0);
+  TSlider.addEventListener('input', updateT);
+  aSlider.addEventListener('input', updateA);
+  bSlider.addEventListener('input', updateB);
+
+  pSlider.addEventListener('input', updateP);
+  thrSlider.addEventListener('input', updateThr);
+
+  mainInflowSlider.addEventListener('input', updateMainInflow);
+  rampInflowSlider.addEventListener('input', updateRampInflow);
+
+  // inicijalni tekst
+  updateV0();
+  updateT();
+  updateA();
+  updateB();
+  updateP();
+  updateThr();
+  updateMainInflow();
+  updateRampInflow();
+}
+
+// ---------------------------
+// 10) Simulacijska petlja
+// ---------------------------
+
 let lastTime = performance.now();
 let simTime = 0;
-const dt = 0.1;
+const dt = 0.05;
 let accumulator = 0;
 
 function renderFrame() {
   ctx.clearRect(0, 0, W, H);
   drawBackground();
   drawVehicles();
-  maskRightSide(); // NA KRAJU: sakrij desni dio (put + auta)
+  maskRightSide(); // sakrij izlaz
 }
 
 function loop(timestamp) {
@@ -379,9 +525,15 @@ function loop(timestamp) {
   accumulator += clamped;
 
   while (accumulator >= dt) {
+    // dinamičko ubacivanje/izbacivanje vozila
+    spawnMainVehicles(dt);
+    spawnRampVehicles(dt);
+
     step(state, idmParams, mobilParams, dt);
     simTime += dt;
     accumulator -= dt;
+
+    removeExitedVehicles();
   }
 
   renderFrame();
@@ -389,5 +541,6 @@ function loop(timestamp) {
 }
 
 // start
+setupSliders();
 renderFrame();
 requestAnimationFrame(loop);

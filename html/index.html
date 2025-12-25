@@ -4,39 +4,215 @@
   <meta charset="UTF-8" />
   <title>Phantom Flow – U-raskrsnica s rampom</title>
   <style>
-    body {
+    * {
+      box-sizing: border-box;
       margin: 0;
-      background: #111;
-      color: #eee;
-      font-family: system-ui, sans-serif;
+      padding: 0;
+    }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101010;
+      color: #f5f5f5;
+      height: 100vh;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: flex-start;
-      height: 100vh;
     }
-
-    h1 {
-      margin: 16px 0 4px;
-      font-size: 18px;
+    header {
+      padding: 10px 24px 4px;
+      text-align: center;
     }
-
-    #info {
+    header h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    header p {
       font-size: 13px;
-      margin-bottom: 8px;
       opacity: 0.8;
     }
-
+    .layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 16px;
+      padding: 12px 16px 16px;
+    }
+    .canvas-wrap {
+      background: #000;
+      border-radius: 16px;
+      overflow: hidden;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      box-shadow: 0 0 30px rgba(0,0,0,0.7);
+    }
     canvas {
-      border: 1px solid #333;
-      background: #000; /* sve ćemo crtati u JS-u */
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+    }
+    .panel {
+      background: #181818;
+      border-radius: 16px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.6);
+    }
+    .panel h2 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    .panel h3 {
+      font-size: 13px;
+      margin-top: 8px;
+      margin-bottom: 2px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #b0e0ff;
+    }
+    .section {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .slider-block {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 12px;
+    }
+    .slider-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .slider-label span:first-child {
+      font-weight: 500;
+    }
+    .slider-value {
+      opacity: 0.75;
+      font-variant-numeric: tabular-nums;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: #29b6f6;
+    }
+    .hint {
+      margin-top: 8px;
+      font-size: 11px;
+      line-height: 1.4;
+      opacity: 0.7;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+    .row > .slider-block {
+      flex: 1;
     }
   </style>
 </head>
 <body>
-  <h1>Phantom Flow – U-raskrsnica s rampom</h1>
-  <div id="info">IDM + MOBIL, 3 trake + ulazna rampa</div>
-  <canvas id="simCanvas" width="1280" height="720"></canvas>
+  <header>
+    <h1>Phantom Flow – U-raskrsnica s rampom</h1>
+    <p>IDM + MOBIL, 3 trake + ulazna rampa – parametri se mogu mijenjati u realnom vremenu</p>
+  </header>
+
+  <div class="layout">
+    <div class="canvas-wrap">
+      <canvas id="simCanvas" width="1280" height="640"></canvas>
+    </div>
+
+    <aside class="panel">
+      <h2>Parametri modela</h2>
+
+      <div class="section">
+        <h3>Car-following (IDM / ACC)</h3>
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Max speed v₀</span>
+            <span class="slider-value" id="v0Value"></span>
+          </div>
+          <input type="range" id="v0Slider" min="60" max="140" step="5" />
+        </div>
+
+        <div class="row">
+          <div class="slider-block">
+            <div class="slider-label">
+              <span>Time gap T</span>
+              <span class="slider-value" id="TValue"></span>
+            </div>
+            <input type="range" id="TSlider" min="0.6" max="3.0" step="0.1" />
+          </div>
+          <div class="slider-block">
+            <div class="slider-label">
+              <span>Comfort decel b</span>
+              <span class="slider-value" id="bValue"></span>
+            </div>
+            <input type="range" id="bSlider" min="0.5" max="4.0" step="0.1" />
+          </div>
+        </div>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Max accel a</span>
+            <span class="slider-value" id="aValue"></span>
+          </div>
+          <input type="range" id="aSlider" min="0.1" max="3.0" step="0.1" />
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Lane-changing (MOBIL)</h3>
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Politeness p</span>
+            <span class="slider-value" id="pValue"></span>
+          </div>
+          <input type="range" id="pSlider" min="0" max="1" step="0.05" />
+        </div>
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>LC threshold b<sub>thr</sub></span>
+            <span class="slider-value" id="thrValue"></span>
+          </div>
+          <input type="range" id="thrSlider" min="0" max="1.0" step="0.05" />
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Traffic flow</h3>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Main inflow</span>
+            <span class="slider-value" id="mainInflowValue"></span>
+          </div>
+          <input type="range" id="mainInflowSlider" min="0" max="6000" step="200" />
+        </div>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>On-ramp inflow</span>
+            <span class="slider-value" id="rampInflowValue"></span>
+          </div>
+          <input type="range" id="rampInflowSlider" min="0" max="3000" step="100" />
+        </div>
+
+        <p class="hint">
+          Povećaj inflow za gužvu i “phantom” zastoje; smanji T za agresivniju vožnju
+          ili povećaj p za kulturnije prestrojavanje.
+        </p>
+      </div>
+    </aside>
+  </div>
 
   <script type="module" src="../js/main.js"></script>
 </body>
