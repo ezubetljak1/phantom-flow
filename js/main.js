@@ -6,8 +6,48 @@ import {
   trySpawnMain,
   trySpawnRamp,
   defaultIdmParams,
-  defaultMobilParams
+  defaultMobilParams,
+  setRng
 } from './models.js';
+
+// ---------------------------
+// Seeded RNG (from URL ?seed=...)
+// ---------------------------
+function hashSeed(seed) {
+  if (seed == null) return 0x12345;
+  if (Number.isFinite(seed)) return (seed >>> 0);
+
+  const str = String(seed);
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function makeMulberry32(seedU32) {
+  let a = (seedU32 >>> 0);
+  return function rng() {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const urlParams = new URLSearchParams(window.location.search);
+const seedParam = urlParams.get('seed'); // can be null
+const seedValue = (seedParam === null)
+  ? 12345
+  : (/^-?\d+$/.test(seedParam) ? Number(seedParam) : seedParam);
+
+const rng = makeMulberry32(hashSeed(seedValue));
+setRng(rng);
+
+// helper for main.js random usage (same rng as models)
+const rand01 = () => rng();
 
 // ---------------------------
 // Network
@@ -82,14 +122,14 @@ function seedVehicles() {
   for (let lane = 0; lane < net.roads.main.laneCount; lane++) {
     for (let k = 0; k < nCarsPerLane; k++) {
       const s = (k * net.roads.main.length) / nCarsPerLane + lane * 6;
-      const v = defaultIdmParams.v0 * (0.75 + 0.5 * Math.random());
+      const v = defaultIdmParams.v0 * (0.75 + 0.5 * rand01());
       trySpawnMain(net, lane, s, v, idCounter, 7);
     }
   }
 
   for (let k = 0; k < 6; k++) {
     const s = k * 16;
-    const v = 12 + (Math.random() - 0.5) * 3;
+    const v = 12 + (rand01() - 0.5) * 3;
     trySpawnRamp(net, s, v, idCounter, 9);
   }
 }
@@ -247,7 +287,7 @@ function drawVehicles() {
 
   for (const veh of vehicles) {
     const { x, y } = worldToCanvas(veh);
-    const radius = 4; // <-- manje tačkice (vizuelno manje "overlap")
+    const radius = 4;
 
     let fill;
     if (veh.roadId === 'ramp') {
@@ -267,7 +307,6 @@ function drawVehicles() {
     ctx.strokeStyle = '#000';
     ctx.stroke();
 
-    // brake ring kad koče
     if (veh.acc < -1.0 && veh.roadId === 'main') {
       ctx.beginPath();
       ctx.arc(x, y, radius + 2, 0, 2 * Math.PI);
@@ -290,7 +329,6 @@ function maskRightSide() {
 const idmParams = { ...defaultIdmParams };
 const mobilParams = { ...defaultMobilParams };
 
-// defaulti koji lakše naprave stop&go
 let mainInflowPerHour = 4500;
 let rampInflowPerHour = 1200;
 
@@ -308,7 +346,7 @@ function spawnMainVehicles(dt) {
     mainSpawnAccumulators[lane] += laneRatePerSec * dt;
 
     while (mainSpawnAccumulators[lane] >= 1.0) {
-      const vInit = idmParams.v0 * (0.85 + 0.35 * Math.random());
+      const vInit = idmParams.v0 * (0.85 + 0.35 * rand01());
       const ok = trySpawnMain(net, lane, sSpawn, vInit, idCounter, 7);
       if (!ok) break;
       mainSpawnAccumulators[lane] -= 1.0;
@@ -323,7 +361,7 @@ function spawnRampVehicles(dt) {
   rampSpawnAccumulator += ratePerSec * dt;
 
   while (rampSpawnAccumulator >= 1.0) {
-    const vInit = idmParams.v0 * (0.55 + 0.25 * Math.random());
+    const vInit = idmParams.v0 * (0.55 + 0.25 * rand01());
     const ok = trySpawnRamp(net, 0, vInit, idCounter, 9);
     if (!ok) break;
     rampSpawnAccumulator -= 1.0;

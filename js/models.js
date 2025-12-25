@@ -6,6 +6,24 @@
 // - occasional brake pulse (phantom jams)
 // - keep hard no-overlap but less "stabilizing"
 
+// -----------------------
+// Global RNG hook (seeded from main.js)
+// -----------------------
+let _rng = Math.random;
+
+/**
+ * Set RNG function used by the simulation.
+ * Expect a function that returns a float in [0,1).
+ * If not set, defaults to Math.random.
+ */
+export function setRng(fn) {
+  _rng = (typeof fn === 'function') ? fn : Math.random;
+}
+
+function rand() {
+  return _rng();
+}
+
 function myTanh(x) {
   if (x > 50) return 1;
   if (x < -50) return -1;
@@ -444,21 +462,15 @@ function mergeFromRamp(net, idmParamsBase, mobilParams) {
 
       // relaxed: allow follower to brake somewhat harder than bSafe
       const bSafe = bSafeActual(veh.v, mobilParams, idmParamsBase);
-      const safeRelaxed = accLagNew >= -(bSafe + 1.0); // <-- ključ: više “guranja”
+      const safeRelaxed = accLagNew >= -(bSafe + 1.0);
 
-      // gap ahead: leaderNew is ahead of inserted veh
-      // condition: (leaderNew.s - veh.s - veh.length) >= s0 + buffer
       const gapAheadOk = !leaderNew || (leaderNew.s - veh.s) >= (veh.length + idmLocalAtCand.s0 + 0.5);
-
-      // gap behind: followerNew is behind inserted veh
-      // condition: (veh.s - followerNew.s - followerNew.length) >= s0 + buffer
       const gapBehindOk = !followerNew || (veh.s - followerNew.s) >= (followerNew.length + idmLocalAtCand.s0 + 0.5);
 
       veh.s = oldS;
 
       if (!(safeRelaxed && gapAheadOk && gapBehindOk)) continue;
 
-      // choose candidate with best (highest) accNew
       if (!best || accNew > best.accNew) best = { candS, accNew };
     }
 
@@ -480,7 +492,6 @@ function mergeFromRamp(net, idmParamsBase, mobilParams) {
     veh.laneChangeStartTime = net.time;
     veh.s = candS;
 
-    // little "merge disturbance": brief small brake to create wave
     veh.brakeUntil = Math.max(veh.brakeUntil, net.time + 0.7);
     veh.extraBrake = -0.4;
 
@@ -496,7 +507,7 @@ export function setPhantomEnabled(net, enabled) {
 }
 
 // -----------------------
-// Phantom jam pulse: periodically force a random car to brake briefly
+// Phantom jam pulse
 // -----------------------
 function maybeTriggerBrakePulse(net) {
   const ph = net.phantom;
@@ -506,7 +517,6 @@ function maybeTriggerBrakePulse(net) {
   const main = net.roads.main;
   const candidates = [];
 
-  // pick cars around/after merge (common jam location)
   const sMin = net.merge.toS - 30;
   const sMax = net.merge.toS + 200;
 
@@ -515,12 +525,12 @@ function maybeTriggerBrakePulse(net) {
   }
 
   if (candidates.length > 0) {
-    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    const pick = candidates[Math.floor(rand() * candidates.length)];
     pick.brakeUntil = net.time + ph.pulseDuration;
     pick.extraBrake = -ph.pulseDecel;
   }
 
-  ph.nextPulseTime = net.time + ph.pulseEvery * (0.8 + 0.4 * Math.random());
+  ph.nextPulseTime = net.time + ph.pulseEvery * (0.8 + 0.4 * rand());
 }
 
 // -----------------------
@@ -529,19 +539,17 @@ function maybeTriggerBrakePulse(net) {
 function integrateAndEnforce(net, road, dt, idmParamsBase) {
   const noiseAmp = 0.9;
 
-  // 1) Integrate (store previous state so we can clamp without moving backwards)
   for (let l = 0; l < road.laneCount; l++) {
     for (const veh of road.lanes[l]) {
       const sPrev = veh.s;
       const vPrev = veh.v;
 
       const aDet = veh.acc || 0;
-      const noise = (Math.random() - 0.5) * 2 * noiseAmp;
+      const noise = (rand() - 0.5) * 2 * noiseAmp;
 
       const extra = (net.time < veh.brakeUntil) ? (veh.extraBrake || 0) : 0;
       const a = aDet + noise + extra;
 
-      // semi-explicit: position uses vPrev (reduces overshoot)
       const vNew = Math.max(0, vPrev + a * dt);
       let sNew = sPrev + vPrev * dt + 0.5 * a * dt * dt;
 
@@ -554,7 +562,6 @@ function integrateAndEnforce(net, road, dt, idmParamsBase) {
     }
   }
 
-  // 2) Boundaries
   if (road.id === 'ramp') {
     for (const veh of road.lanes[0]) {
       if (veh.s > road.length) { veh.s = road.length; veh.v = 0; }
@@ -568,7 +575,6 @@ function integrateAndEnforce(net, road, dt, idmParamsBase) {
     }
   }
 
-  // 3) Enforce no-overlap WITHOUT pushing cars backwards
   road.sortLanes();
   const minSpacing = idmParamsBase.s0 + 0.8;
 
@@ -579,20 +585,16 @@ function integrateAndEnforce(net, road, dt, idmParamsBase) {
       const follower = laneVeh[i - 1];
       const leader = laneVeh[i];
 
-      // follower must satisfy: leader.s - follower.s - follower.length >= minSpacing
       const desiredMaxS = leader.s - follower.length - minSpacing;
 
       if (follower.s > desiredMaxS) {
         const prevS = (typeof follower.prevS === 'number') ? follower.prevS : follower.s;
 
-        // never move backwards (if desiredMaxS < prevS, we keep prevS)
         follower.s = Math.max(desiredMaxS, prevS);
 
-        // cap speed so it matches the clamped displacement (and never exceeds leader)
         const vCap = Math.max(0, (follower.s - prevS) / dt);
         follower.v = Math.min(follower.v, leader.v, vCap);
 
-        // if we had to "freeze" at prevS, make it a full stop
         if (follower.s === prevS) follower.v = 0;
       }
     }
@@ -603,29 +605,25 @@ function integrateAndEnforce(net, road, dt, idmParamsBase) {
 // Spawn helpers
 // -----------------------
 function randnApprox() {
-  // quick approx normal using sum of uniforms
   let s = 0;
-  for (let i = 0; i < 6; i++) s += Math.random();
-  return (s - 3); // mean 0
+  for (let i = 0; i < 6; i++) s += rand();
+  return (s - 3);
 }
 
-// ✅ FIX: spawn provjera mora znati dužinu NOVOG vozila (ne leader.length)
 function canSpawnAt(road, lane, sSpawn, newLen, minGap) {
   road.sortLanes();
   const laneVeh = road.lanes[lane];
   const { leader } = findNeighborsAtS(laneVeh, sSpawn);
   if (!leader) return true;
-  // require: leader.s - (sSpawn + newLen) >= minGap  =>  leader.s - sSpawn >= newLen + minGap
   return (leader.s - sSpawn) >= (newLen + minGap);
 }
 
 export function spawnVehicle(net, road, { id, lane, s, v }) {
   const h = net.hetero;
 
-  const isTruck = Math.random() < h.truckFraction;
+  const isTruck = rand() < h.truckFraction;
   const length = isTruck ? h.truckLength : h.carLength;
 
-  // per-vehicle v0 multiplier (cars spread, trucks slower)
   let v0Mult = 1.0 + h.v0Spread * randnApprox();
   v0Mult = Math.max(0.70, Math.min(1.30, v0Mult));
   if (isTruck) v0Mult = Math.min(v0Mult, h.truckV0Mult);
@@ -648,24 +646,19 @@ function removeExitedMain(mainRoad, buffer = 120) {
 export function stepNetwork(net, idmParamsBase = defaultIdmParams, mobilParams = defaultMobilParams, dt = 0.1) {
   net.time += dt;
 
-  // phantom pulse (može ostati ovdje)
   maybeTriggerBrakePulse(net);
 
-  // Lane-change i merge mijenjaju susjede -> radi ih prije računanja acc za integraciju
   laneChangeMain(net.roads.main, net.time, idmParamsBase, mobilParams);
   mergeFromRamp(net, idmParamsBase, mobilParams);
 
-  // SADA izračunaj tačna ubrzanja za trenutno stanje traka
   calcAccelerationsForRoad(net.roads.main, idmParamsBase);
   calcAccelerationsForRoad(net.roads.ramp, idmParamsBase);
 
-  // Integracija + overlap enforce
   integrateAndEnforce(net, net.roads.main, dt, idmParamsBase);
   integrateAndEnforce(net, net.roads.ramp, dt, idmParamsBase);
 
   removeExitedMain(net.roads.main, 120);
 }
-
 
 export function getAllVehicles(net) {
   return [...net.roads.main.allVehicles(), ...net.roads.ramp.allVehicles()];
@@ -673,7 +666,6 @@ export function getAllVehicles(net) {
 
 export function trySpawnMain(net, lane, sSpawn, vInit, idCounterRef, minGap = 8) {
   const main = net.roads.main;
-  // conservative: assume the longest possible vehicle could spawn here
   const newLen = net.hetero?.truckLength ?? 7.5;
   if (!canSpawnAt(main, lane, sSpawn, newLen, minGap)) return false;
   spawnVehicle(net, main, { id: idCounterRef.nextId++, lane, s: sSpawn, v: vInit });
