@@ -15,7 +15,7 @@ import {
 const net = createNetwork({
   mainLength: 920,
   mainLaneCount: 3,
-  rampLength: 140,
+  rampLength: 125,
 
   mergeMainS: 470,
   mergeMainLane: 2,
@@ -247,7 +247,7 @@ function drawVehicles() {
 
   for (const veh of vehicles) {
     const { x, y } = worldToCanvas(veh);
-    const radius = 6; // <-- sve iste tačkice
+    const radius = 4; // <-- manje tačkice (vizuelno manje "overlap")
 
     let fill;
     if (veh.roadId === 'ramp') {
@@ -301,7 +301,6 @@ function spawnMainVehicles(dt) {
   const totalRatePerSec = mainInflowPerHour / 3600;
   if (totalRatePerSec <= 0) return;
 
-  // ✅ FIX: tačan laneCount
   const laneRatePerSec = totalRatePerSec / net.roads.main.laneCount;
   const sSpawn = 10;
 
