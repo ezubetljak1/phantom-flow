@@ -365,6 +365,8 @@ let rampInflowPerHour = 1200;
 // accumulators must reset
 let mainSpawnAccumulators = new Array(net.roads.main.laneCount).fill(0);
 let rampSpawnAccumulator = 0;
+let spawnedSinceLastSample = { main: 0, ramp: 0 };
+
 
 function spawnMainVehicles(dt) {
   const totalRatePerSec = mainInflowPerHour / 3600;
@@ -380,6 +382,7 @@ function spawnMainVehicles(dt) {
       const vInit = idmParams.v0 * (0.85 + 0.35 * rand01());
       const ok = trySpawnMain(net, lane, sSpawn, vInit, idCounter, 7);
       if (!ok) break;
+      spawnedSinceLastSample.main += 1;
       mainSpawnAccumulators[lane] -= 1.0;
     }
   }
@@ -395,6 +398,7 @@ function spawnRampVehicles(dt) {
     const vInit = idmParams.v0 * (0.55 + 0.25 * rand01());
     const ok = trySpawnRamp(net, 0, vInit, idCounter, 9);
     if (!ok) break;
+    spawnedSinceLastSample.ramp += 1;
     rampSpawnAccumulator -= 1.0;
   }
 }
@@ -586,12 +590,65 @@ function loop(ts) {
   const dt = 0.05;
   const nSteps = Math.max(1, Math.min(10, Math.round(realDt / dt)));
 
-  for (let i = 0; i < nSteps; i++) {
-    spawnMainVehicles(dt);
-    spawnRampVehicles(dt);
-    stepNetwork(net, idmParams, mobilParams, dt);
-    detectorsOnStep();
+for (let i = 0; i < nSteps; i++) {
+  spawnMainVehicles(dt);
+  spawnRampVehicles(dt);
+
+  // snapshot ramp ids BEFORE step (after spawn)
+  const rampIdsBefore = new Set(net.roads.ramp.allVehicles().map(v => v.id));
+
+  stepNetwork(net, idmParams, mobilParams, dt);
+
+  // AFTER step: merges + lane changes + hard braking
+  const tNow = net.time;
+  const mainVeh = net.roads.main.allVehicles();
+
+  for (const v of mainVeh) {
+    // merge event: was on ramp before step, now on main
+    if (rampIdsBefore.has(v.id)) {
+      logEvent({
+        t: tNow,
+        type: "merge",
+        id: v.id,
+        toLane: v.lane,
+        s: v.s,
+        vKmh: (v.v ?? 0) * 3.6
+      });
+    }
+
+    // lane-change: robust
+    if (v.prevLane != null && v.lane !== v.prevLane) {
+      logEvent({
+        t: tNow,
+        type: "lane_change",
+        id: v.id,
+        from: v.prevLane,
+        to: v.lane,
+        s: v.s,
+        vKmh: (v.v ?? 0) * 3.6
+      });
+    }
+
+    // hard brake (edge-triggered)
+    const hard = (v.acc ?? 0) < -2.0;
+    const wasHard = lastHardBrake.get(v.id) || false;
+    if (hard && !wasHard) {
+      logEvent({
+        t: tNow,
+        type: "hard_brake",
+        id: v.id,
+        lane: v.lane,
+        s: v.s,
+        acc: v.acc,
+        vKmh: (v.v ?? 0) * 3.6
+      });
+    }
+    lastHardBrake.set(v.id, hard);
   }
+
+  detectorsOnStep();
+}
+
   detectorsUpdateUI();
   logTick();
 
@@ -746,6 +803,17 @@ function detectorsOnStep() {
         d.passTimes.push(t);
         d.totalPasses += 1;
         recordCrossing(d.label, v, t);
+
+        logEvent({
+            t,
+            type: "detector_cross",
+            det: d.label,
+            id: v.id,
+            lane: v.lane,
+            s: v.s,
+            vKmh: (v.v ?? 0) * 3.6
+          });
+
       }
     }
   }
@@ -997,7 +1065,8 @@ const logData = {
       postCurveEndS: NET_CONFIG.curveStartS + NET_CONFIG.curveLength + NET_CONFIG.postCurveLength,
       bins: { binSizeM: BIN_SIZE_M, nBins: nBinsMain },
       detectors: {} // filled after initDetectors()
-    }
+    },
+    hasEvents: true
   },
   samples: []
 };
@@ -1017,6 +1086,23 @@ function refreshLogDerivedMeta() {
   for (const d of detectors) detMap[d.label] = { s: d.s, range: d.range, window: d.window };
   logData.meta.derived.detectors = detMap;
 }
+
+const TRAJ_MAX = 30;
+function snapshotTraj(vehMain) {
+  const arr = vehMain
+    .slice()
+    .sort((a,b) => a.id - b.id)
+    .slice(0, TRAJ_MAX)
+    .map(v => ({
+      id: v.id,
+      lane: v.lane,
+      s: v.s,
+      vKmh: (v.v ?? 0) * 3.6,
+      acc: v.acc ?? 0
+    }));
+  return arr;
+}
+
 
 function logTick() {
   const t = net.time;
@@ -1067,12 +1153,32 @@ function logTick() {
     binsMain,
 
     // travel time stats
-    travelTime: tt
+    travelTime: tt,
+    spawns: {...spawnedSinceLastSample},
+    traj: snapshotTraj(vehMain)
   });
+
+  spawnedSinceLastSample.main = 0;
+  spawnedSinceLastSample.ramp = 0;
 
   const logInfo = document.getElementById('logInfo');
   if (logInfo) logInfo.textContent = `log: ${logData.samples.length} samples`;
 }
+
+// ---------------------------
+// EVENT logging (discrete events)
+// ---------------------------
+const MAX_EVENTS = 200000; // safety cap
+function logEvent(e) {
+  if (!e) return;
+  logData.events = logData.events || [];
+  if (logData.events.length >= MAX_EVENTS) return;
+  logData.events.push(e);
+}
+
+// state for edge-triggered events
+const lastHardBrake = new Map(); // id -> bool (wasHardBraking)
+
 
 function downloadJSON() {
   const nameSeed = String(seedValue).replace(/[^a-z0-9_-]+/gi, '_');
@@ -1093,6 +1199,8 @@ function downloadJSON() {
 
 function clearLog() {
   logData.samples.length = 0;
+  logData.events = [];
+  lastHardBrake.clear();
   lastLogT = -Infinity;
   logData.meta.createdAt = new Date().toISOString();
 
