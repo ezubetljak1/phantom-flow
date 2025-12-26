@@ -6,6 +6,18 @@
 // - occasional brake pulse (phantom jams)
 // - keep hard no-overlap but less "stabilizing"
 
+
+// ===== MOBIL debug =====
+window.__MOBIL_DEBUG__ =  {
+  on: true,
+  every: 10,        // ispis svakih N poziva
+  maxPrint: 50,     // max ispisa
+  printed: 0,
+  seen: 0,
+  onlySafe: false   // true => ispisuj samo ako je safe
+};
+
+
 // -----------------------
 // Global RNG hook (seeded from main.js)
 // -----------------------
@@ -95,7 +107,7 @@ export const defaultMobilParams = {
   bSafeMax: 4.0,
   p: 0.1,
   bThr: 0.2,
-  bBiasRight: 0.0,
+  bBiasRight: 0.05,
   cooldown: 3.0
 };
 
@@ -122,8 +134,53 @@ function mobilEvaluateMove({
   const politeness = mobilParams.p;
   const bias = signRight * mobilParams.bBiasRight;
 
+//  const incentive =
+  //  (accNew - accOld) + politeness * (accLagNew - accLagOld) - mobilParams.bThr + bias;
   const incentive =
-    (accNew - accOld) + politeness * (accLagNew - accLagOld) - mobilParams.bThr + bias;
+  (accNew - accOld) + politeness * accLagNew - mobilParams.bThr + bias;
+
+
+
+// ===== MOBIL debug dump (works inside mobilEvaluateMove) =====
+const D = window.__MOBIL_DEBUG__;
+if (D?.on) {
+  D.seen++;
+
+  const shouldPrint =
+    (D.printed < D.maxPrint) &&
+    (D.seen % D.every === 0) &&
+    (!D.onlySafe || safe);
+
+  if (shouldPrint) {
+    D.printed++;
+
+    const dSelf = (accNew - accOld);
+    const dLag  = (accLagNew - accLagOld);
+
+    // "Treiber-like" varijanta (absolute penal za target follower-a)
+    // (bias i bThr su isti kao u tvom modelu)
+    const incentiveTreiberLike =
+      dSelf + politeness * (accLagNew) - mobilParams.bThr + bias;
+
+    // Tvoja varijanta (delta penal: kako si promijenio follower-a ukupno)
+    const incentiveYours =
+      dSelf + politeness * dLag - mobilParams.bThr + bias;
+
+    console.log(
+      `[MOBIL] id=${veh.id} toRight=${toRight} v=${(veh.v*3.6).toFixed(1)} ` +
+      `accOld=${accOld.toFixed(2)} accNew=${accNew.toFixed(2)} dSelf=${dSelf.toFixed(2)} ` +
+      `accLagOld=${accLagOld.toFixed(2)} accLagNew=${accLagNew.toFixed(2)} dLag=${dLag.toFixed(2)} ` +
+      `p=${politeness} bThr=${mobilParams.bThr} bias=${bias.toFixed(2)} bSafe=${bSafe.toFixed(2)} safe=${safe} ` +
+      `incentive=${incentive.toFixed(2)}`
+    );
+
+    console.log(
+      `  Treiber-like incentive: ${incentiveTreiberLike.toFixed(2)} | ` +
+      `Your incentive: ${incentiveYours.toFixed(2)}`
+    );
+  }
+}
+
 
   return { safe, incentive };
 }
@@ -272,7 +329,9 @@ export function createNetwork({
 // -----------------------
 // Neighbor helpers
 // -----------------------
-function findNeighborsAtS(laneVehiclesSorted, sQuery) {
+function findNeighborsAtS(laneVehiclesSorted, sQuery, road) {
+  // Returns immediate leader (ahead) and follower (behind) around sQuery in the given lane array.
+  // If road.isRing, this is wrap-around aware (leader/follower never null if lane non-empty).
   if (laneVehiclesSorted.length === 0) return { leader: null, follower: null };
 
   let lo = 0, hi = laneVehiclesSorted.length;
@@ -281,9 +340,26 @@ function findNeighborsAtS(laneVehiclesSorted, sQuery) {
     if (laneVehiclesSorted[mid].s < sQuery) lo = mid + 1;
     else hi = mid;
   }
-  const leader = lo < laneVehiclesSorted.length ? laneVehiclesSorted[lo] : null;
-  const follower = lo > 0 ? laneVehiclesSorted[lo - 1] : null;
+
+  const n = laneVehiclesSorted.length;
+  const isRing = !!(road && road.isRing);
+
+  let leader = (lo < n) ? laneVehiclesSorted[lo] : null;
+  let follower = (lo > 0) ? laneVehiclesSorted[lo - 1] : null;
+
+  if (isRing) {
+    if (!leader) leader = laneVehiclesSorted[0];
+    if (!follower) follower = laneVehiclesSorted[n - 1];
+  }
+
   return { leader, follower };
+}
+
+// forward distance along +s direction on a ring (0..L)
+function forwardDist(sFrom, sTo, L) {
+  let d = (sTo - sFrom) % L;
+  if (d < 0) d += L;
+  return d;
 }
 
 function findLeaderForVeh(laneVehiclesSorted, veh, road) {
@@ -390,14 +466,29 @@ function laneChangeMain(roadMain, netTime, idmParamsBase, mobilParams) {
       const targetVeh = roadMain.lanes[targetLane]; // current target lane (sorted)
 
       // Get current neighbors around our s
-      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetVeh, veh.s);
+      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetVeh, veh.s, roadMain);
 
       // Hard geometric safety (avoid overlaps now, not later)
-      // s is REAR position, so:
-      // - leaderNew.s - veh.s >= veh.length + minSpacing
-      // - veh.s - followerNew.s >= followerNew.length + minSpacing
-      if (leaderNew && (leaderNew.s - veh.s) < (veh.length + minSpacing)) continue;
-      if (followerNew && (veh.s - followerNew.s) < (followerNew.length + minSpacing)) continue;
+      // For ring roads we MUST use wrap-around distances, otherwise a car near s≈0
+      // may be treated as having "negative gap" and then gets corrected by hard
+      // no-overlap enforcement -> looks like a random hard brake.
+      if (roadMain.isRing) {
+        const L = roadMain.length;
+        if (leaderNew) {
+          const dAhead = forwardDist(veh.s, leaderNew.s, L);
+          if (dAhead < (veh.length + minSpacing)) continue;
+        }
+        if (followerNew) {
+          const dBehind = forwardDist(followerNew.s, veh.s, L);
+          if (dBehind < (followerNew.length + minSpacing)) continue;
+        }
+      } else {
+        // s is REAR position, so:
+        // - leaderNew.s - veh.s >= veh.length + minSpacing
+        // - veh.s - followerNew.s >= followerNew.length + minSpacing
+        if (leaderNew && (leaderNew.s - veh.s) < (veh.length + minSpacing)) continue;
+        if (followerNew && (veh.s - followerNew.s) < (followerNew.length + minSpacing)) continue;
+      }
 
       // New lane accel
       const idmLocalNew = localIdmParams(roadMain, veh.s, idmParamsBase, veh);
@@ -432,10 +523,22 @@ function laneChangeMain(roadMain, netTime, idmParamsBase, mobilParams) {
     if (bestLane !== lane && bestIncentive > 0) {
       // Before moving, re-check gaps AGAIN (because earlier moves may have changed target lane)
       const targetVeh = roadMain.lanes[bestLane];
-      const { leader: leaderNow, follower: followerNow } = findNeighborsAtS(targetVeh, veh.s);
+      const { leader: leaderNow, follower: followerNow } = findNeighborsAtS(targetVeh, veh.s, roadMain);
 
-      if (leaderNow && (leaderNow.s - veh.s) < (veh.length + minSpacing)) continue;
-      if (followerNow && (veh.s - followerNow.s) < (followerNow.length + minSpacing)) continue;
+      if (roadMain.isRing) {
+        const L = roadMain.length;
+        if (leaderNow) {
+          const dAhead = forwardDist(veh.s, leaderNow.s, L);
+          if (dAhead < (veh.length + minSpacing)) continue;
+        }
+        if (followerNow) {
+          const dBehind = forwardDist(followerNow.s, veh.s, L);
+          if (dBehind < (followerNow.length + minSpacing)) continue;
+        }
+      } else {
+        if (leaderNow && (leaderNow.s - veh.s) < (veh.length + minSpacing)) continue;
+        if (followerNow && (veh.s - followerNow.s) < (followerNow.length + minSpacing)) continue;
+      }
 
       // Apply immediately (sequential)
       const oldArr = roadMain.lanes[lane];
@@ -488,7 +591,7 @@ function mergeFromRamp(net, idmParamsBase, mobilParams) {
       const alpha = tries === 1 ? 0.5 : k / (tries - 1);
       const candS = Math.max(0, mergeS - half + alpha * (2 * half));
 
-      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetLane, candS);
+      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetLane, candS, main);
 
       const oldS = veh.s;
       veh.s = candS;
@@ -583,7 +686,7 @@ function maybeTriggerBrakePulse(net) {
 // Integrate + enforce no-overlap
 // -----------------------
 function integrateAndEnforce(net, road, dt, idmParamsBase) {
-  const noiseAmp = 0.9;
+  const noiseAmp = (typeof net.noiseAmp === 'number') ? net.noiseAmp : 0.9;
 
   for (let l = 0; l < road.laneCount; l++) {
     for (const veh of road.lanes[l]) {
@@ -675,7 +778,7 @@ function randnApprox() {
 function canSpawnAt(road, lane, sSpawn, newLen, minGap) {
   road.sortLanes();
   const laneVeh = road.lanes[lane];
-  const { leader } = findNeighborsAtS(laneVeh, sSpawn);
+  const { leader } = findNeighborsAtS(laneVeh, sSpawn, road);
   if (!leader) return true;
   return (leader.s - sSpawn) >= (newLen + minGap);
 }

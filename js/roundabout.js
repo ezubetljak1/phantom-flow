@@ -9,8 +9,13 @@ import {
   spawnVehicle,
   stepNetwork,
   defaultIdmParams,
-  defaultMobilParams
+  defaultMobilParams,
+  setRng
 } from './models.js';
+
+let logData = null;
+let lastSampleT = -1e9;
+let lastTrajT = -1e9;
 
 export function runRoundabout() {
   const canvas = document.getElementById('simCanvas');
@@ -71,7 +76,7 @@ export function runRoundabout() {
   if (TSlider)  { TSlider.min = 0.8;  TSlider.max = 3.0;  TSlider.step = 0.1; }
   if (aSlider)  { aSlider.min = 0.3;  aSlider.max = 3.0;  aSlider.step = 0.1; }
   if (bSlider)  { bSlider.min = 0.5;  bSlider.max = 4.0;  bSlider.step = 0.1; }
-  if (pSlider)  { pSlider.min = 0.0;  pSlider.max = 1.0;  pSlider.step = 0.01; }
+  if (pSlider)  { pSlider.min = -0.02;  pSlider.max = 1.0;  pSlider.step = 0.01; }
   if (thrSlider){ thrSlider.min = 0.0;thrSlider.max = 1.0;thrSlider.step = 0.01; }
 
   // Default vrijednosti (možeš mijenjati)
@@ -79,8 +84,15 @@ export function runRoundabout() {
   setSlider(TSlider,  1.4);
   setSlider(aSlider,  1.0);
   setSlider(bSlider,  2.5);
-  setSlider(pSlider,  0.2);
+  setSlider(pSlider,  0.1);
   setSlider(thrSlider,0.35);
+
+  // Log dugmad (initLog se poziva kasnije nakon geometry+detectors init)
+  const downloadBtn = document.getElementById('downloadLogBtn');
+  const clearBtn = document.getElementById('clearLogBtn');
+  if (downloadBtn) downloadBtn.addEventListener('click', downloadLog);
+  if (clearBtn) clearBtn.addEventListener('click', clearLog);
+
 
   // ---------------------------
   // Ring geometrija (fizičke jedinice)
@@ -90,6 +102,549 @@ export function runRoundabout() {
   const laneWidthM  = 5.8;   // širina trake (m)  (deblje trake)   // širina trake (m)  (deblje trake)
   const refRadiusM  = innerRadiusM + laneWidthM * (laneCount / 2); // referentni radijus za s
   const ringLengthM = 2 * Math.PI * refRadiusM;
+
+// ---------------------------
+// Seeded RNG (isto kao u main.js, iz URL ?seed=...)
+// ---------------------------
+function hashSeed(seed) {
+  if (seed == null) return 0x12345;
+  if (Number.isFinite(seed)) return (seed >>> 0);
+
+  const str = String(seed);
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function makeMulberry32(seedU32) {
+  let a = (seedU32 >>> 0);
+  return function rng() {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const urlParams = new URLSearchParams(window.location.search);
+const seedParam = urlParams.get('seed'); // can be null
+const seedValue = (seedParam === null)
+  ? 12345
+  : (/^-?\d+$/.test(seedParam) ? Number(seedParam) : seedParam);
+
+// rng is re-creatable on reset:
+let rng = makeMulberry32(hashSeed(seedValue));
+setRng(rng);
+
+// helper for roundabout.js random usage (same rng as models)
+let rand01 = () => rng();
+
+function resetRng() {
+  rng = makeMulberry32(hashSeed(seedValue));
+  setRng(rng);
+  rand01 = () => rng();
+}
+
+// ---------------------------
+// JSON logging (fokus: fantomska gužva / stop-and-go valovi)
+// ---------------------------
+const LOG_EVERY_SEC = 0.5;   // koliko često uzimamo "sample"
+const TRAJ_EVERY_SEC = 0.5;  // koliko često logujemo trajektorije (s,v,lane) za sva vozila
+const BIN_SIZE_M = 10;       // binovi za space-time heatmap (brzina/gustina po poziciji)
+const JAM_V_KMH = 10;        // prag za "spora/zaustavljena" vozila -> detekcija gužve
+const JAM_BIN_V_KMH = 25;     // prag (km/h) za jam binove (space–time)
+const JAM_MIN_LEN_M = 20;      // minimalna dužina jamm-a (m) da ga smatramo prisutnim
+const JAM_MIN_LEN_OFF_M = 10;  // histereza: jam nestaje tek kad padne ispod ovoga
+const JAM_BIN_MIN_COUNT = 2;   // bin mora imati bar ovoliko vozila (ukupno preko traka)
+const DET_RANGE_M = 50;      // +/- opseg oko virtualnog detektora za lokalnu gustinu/brzinu
+const DET_WINDOW_SEC = 30;   // prozor za flow (vozila/h) po detektoru
+
+const nBinsRing = Math.max(1, Math.ceil(ringLengthM / BIN_SIZE_M));
+
+function circDist(a, b, L) {
+  const d = Math.abs(a - b);
+  return Math.min(d, L - d);
+}
+
+function crossedDetector(prevS, curS, detS, L) {
+  if (prevS === undefined || prevS === null) return false;
+  if (curS >= prevS) {
+    return (prevS < detS && curS >= detS);
+  } else {
+    // wrap: treat detS possibly in [0, L) or shifted by +L
+    const detU = (detS < prevS) ? (detS + L) : detS;
+    return (prevS < detU && (curS + L) >= detU);
+  }
+}
+
+function computeBinsRing(vehAll) {
+  const cnt = Array.from({ length: laneCount }, () => new Array(nBinsRing).fill(0));
+  const vSum = Array.from({ length: laneCount }, () => new Array(nBinsRing).fill(0));
+
+  for (const v of vehAll) {
+    const lane = v.lane | 0;
+    const i = Math.max(0, Math.min(nBinsRing - 1, Math.floor(v.s / BIN_SIZE_M)));
+    cnt[lane][i] += 1;
+    vSum[lane][i] += v.v * 3.6;
+  }
+
+  const speedKmh = cnt.map((arr, lane) => arr.map((c, i) => c > 0 ? (vSum[lane][i] / c) : null));
+  return { binSizeM: BIN_SIZE_M, nBins: nBinsRing, count: cnt, speedKmh };
+}
+
+function computeJamFromBins(bins) {
+  // Jam detekcija iz space–time binova (robustnije od "spori veh" kad nema potpunog stajanja).
+  // Označi bin kao "jam" ako je prosječna brzina mala i ima dovoljno vozila.
+  const nBins = bins.nBins;
+  const jamMask = new Array(nBins).fill(false);
+
+  for (let i = 0; i < nBins; i++) {
+    let cTot = 0;
+    let vSum = 0;
+    for (let ln = 0; ln < laneCount; ln++) {
+      const c = bins.count[ln][i] | 0;
+      const vk = bins.speedKmh[ln][i];
+      if (c > 0 && vk !== null) {
+        cTot += c;
+        vSum += vk * c;
+      }
+    }
+    if (cTot >= JAM_BIN_MIN_COUNT) {
+      const vMean = vSum / cTot;
+      if (vMean <= JAM_BIN_V_KMH) jamMask[i] = true;
+    }
+  }
+
+  // Najduži uzastopni niz jam binova na kružnici
+  let bestLen = 0;
+  let bestEnd = -1;
+
+  // dupliraj masku da uhvati wrap-around
+  let curLen = 0;
+  for (let i = 0; i < 2 * nBins; i++) {
+    const isJam = jamMask[i % nBins];
+    if (isJam) {
+      curLen++;
+      if (curLen > bestLen) {
+        bestLen = curLen;
+        bestEnd = i; // inclusive (u "duplom" indeksiranju)
+      }
+    } else {
+      curLen = 0;
+    }
+  }
+
+  // Clamp: niz preko nBins nema smisla (cijeli ring)
+  bestLen = Math.min(bestLen, nBins);
+
+  const jamLengthM = bestLen * bins.binSizeM;
+  if (bestLen === 0) return { present: false, by: "bins", jamLengthM: 0, nJamBins: 0 };
+
+  // start = end - len + 1 (u duplom prostoru), mapiraj na [0..nBins)
+  const startIdx = ((bestEnd - bestLen + 1) % nBins + nBins) % nBins;
+  const jamStartS = startIdx * bins.binSizeM;
+  const jamCenterS = (jamStartS + jamLengthM * 0.5) % ringLengthM;
+
+  return {
+    present: jamLengthM >= JAM_MIN_LEN_M,
+    by: "bins",
+    nJamBins: bestLen,
+    jamLengthM,
+    jamStartS,
+    jamCenterS
+  };
+}
+
+
+
+function computeHeadways(vehAll) {
+  // Returns per-lane headway histograms (time + space) to study stability/stop&go waves
+  const lanes = Array.from({ length: laneCount }, () => []);
+  for (const v of vehAll) {
+    const ln = (v.lane | 0);
+    if (ln >= 0 && ln < laneCount) lanes[ln].push(v);
+  }
+  for (const arr of lanes) arr.sort((a, b) => a.s - b.s);
+
+  const timeBins = makeHistBins(0, 6, 30);   // 0..6s (fine enough)
+  const gapBins = makeHistBins(0, 60, 30);   // 0..60m
+
+  const perLane = [];
+  for (let ln = 0; ln < laneCount; ln++) {
+    const arr = lanes[ln];
+    const n = arr.length;
+    const timeHist = new Array(timeBins.n).fill(0);
+    const gapHist = new Array(gapBins.n).fill(0);
+
+    let meanTh = 0;
+    let meanGap = 0;
+
+    if (n >= 2) {
+      for (let i = 0; i < n; i++) {
+        const cur = arr[i];
+        const nxt = arr[(i + 1) % n];
+        let gap = nxt.s - cur.s;
+        if (gap <= 0) gap += ringLengthM;
+        // Note: vehicles are points -> "gap" is center distance; OK for analysis here.
+        const v = Math.max(0.1, cur.v);  // m/s
+        const th = Math.min(10, gap / v);
+
+        meanTh += th;
+        meanGap += gap;
+
+        binInto(timeHist, timeBins, th);
+        binInto(gapHist, gapBins, gap);
+      }
+      meanTh /= n;
+      meanGap /= n;
+    }
+
+    perLane.push({
+      lane: ln,
+      n,
+      timeHeadwaySec: { mean: meanTh, bins: timeBins, hist: timeHist },
+      spaceGapM: { mean: meanGap, bins: gapBins, hist: gapHist }
+    });
+  }
+
+  return { perLane };
+}
+
+function makeHistBins(min, max, n) {
+  return { min, max, n, step: (max - min) / n };
+}
+
+function binInto(hist, bins, x) {
+  if (x <= bins.min) { hist[0]++; return; }
+  if (x >= bins.max) { hist[bins.n - 1]++; return; }
+  const i = Math.max(0, Math.min(bins.n - 1, Math.floor((x - bins.min) / bins.step)));
+  hist[i]++;
+}
+
+function computeJamMetrics(vehAll) {
+  const slow = vehAll
+    .filter(v => (v.v * 3.6) < JAM_V_KMH)
+    .map(v => v.s)
+    .sort((a, b) => a - b);
+
+  const n = slow.length;
+  if (n < 3) return { present: false, nSlow: n };
+
+  // largest gap on circle -> complement is jam cluster length
+  let maxGap = -1;
+  let maxIdx = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const g = slow[i + 1] - slow[i];
+    if (g > maxGap) { maxGap = g; maxIdx = i; }
+  }
+  const wrapGap = (slow[0] + ringLengthM) - slow[n - 1];
+  if (wrapGap > maxGap) { maxGap = wrapGap; maxIdx = n - 1; }
+
+  const jamLengthM = Math.max(0, ringLengthM - maxGap);
+
+  // jam starts right after the max gap
+  const jamStart = slow[(maxIdx + 1) % n];
+  const jamCenter = (jamStart + jamLengthM * 0.5) % ringLengthM;
+
+  return {
+    present: jamLengthM > 5,
+    nSlow: n,
+    jamLengthM,
+    jamStartS: jamStart,
+    jamCenterS: jamCenter
+  };
+}
+
+function computeGlobal(vehAll) {
+  const N = vehAll.length;
+  const vArr = new Array(N);
+  const aArr = new Array(N);
+  const laneVSum = new Array(laneCount).fill(0);
+  const laneCnt = new Array(laneCount).fill(0);
+
+  for (let i = 0; i < N; i++) {
+    const v = vehAll[i];
+    const vk = v.v * 3.6;
+    vArr[i] = vk;
+    aArr[i] = (typeof v.acc === 'number') ? v.acc : 0;
+    const ln = (v.lane | 0);
+    if (ln >= 0 && ln < laneCount) {
+      laneVSum[ln] += vk;
+      laneCnt[ln] += 1;
+    }
+  }
+
+  const vStats = basicStats(vArr);
+  const aStats = basicStats(aArr);
+
+  const densPerLane = laneCount ? (N / laneCount) / (ringLengthM / 1000) : 0;
+  const densTotal = N / (ringLengthM / 1000);
+
+  let nStopped = 0;
+  let nHard = 0;
+  for (let i = 0; i < N; i++) {
+    if (vArr[i] < 0.5) nStopped += 1;        // ~0 km/h
+    if (aArr[i] <= -4.0) nHard += 1;         // hard brake threshold
+  }
+
+  const laneMeanVKmh = laneVSum.map((s, i) => laneCnt[i] ? (s / laneCnt[i]) : 0);
+
+  return {
+    N,
+    densPerLane,
+    densTotal,
+    speed: vStats,
+    acc: aStats,
+    stopFrac: N ? (nStopped / N) : 0,
+    hardBrakeFrac: N ? (nHard / N) : 0,
+    laneMeanVKmh
+  };
+}
+
+function basicStats(arr) {
+  const n = arr.length;
+  if (!n) return { mean: 0, std: 0, min: 0, p10: 0, p50: 0, p90: 0, max: 0 };
+  // copy + sort once (n is small ~ few hundred)
+  const srt = arr.slice().sort((a, b) => a - b);
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += srt[i];
+  const mean = sum / n;
+  let varSum = 0;
+  for (let i = 0; i < n; i++) {
+    const d = srt[i] - mean;
+    varSum += d * d;
+  }
+  const std = Math.sqrt(varSum / n);
+  const p10 = quantileSorted(srt, 0.10);
+  const p50 = quantileSorted(srt, 0.50);
+  const p90 = quantileSorted(srt, 0.90);
+  return { mean, std, min: srt[0], p10, p50, p90, max: srt[n - 1] };
+}
+
+function quantileSorted(sortedArr, q) {
+  const n = sortedArr.length;
+  if (n === 0) return 0;
+  const x = (n - 1) * q;
+  const i0 = Math.floor(x);
+  const i1 = Math.min(n - 1, i0 + 1);
+  const t = x - i0;
+  return sortedArr[i0] * (1 - t) + sortedArr[i1] * t;
+}
+
+function makeDetector(label, sDet) {
+  return {
+    label,
+    sDet,
+    passTimes: [],
+    totalPasses: 0,
+    last: null
+  };
+}
+
+const detectors = [
+  makeDetector('D0', 0),
+  makeDetector('D1', ringLengthM * 0.25),
+  makeDetector('D2', ringLengthM * 0.5),
+  makeDetector('D3', ringLengthM * 0.75)
+];
+
+  // Sad kad su geometry + detectors spremni, inicijalizuj log
+  initLog();
+  updateLogInfo();
+
+
+function updateDetectors(tNow, vehAll, prevSById) {
+  // prune times
+  const cutoff = tNow - DET_WINDOW_SEC;
+  for (const d of detectors) {
+    while (d.passTimes.length && d.passTimes[0] < cutoff) d.passTimes.shift();
+  }
+
+  // crossing events
+  for (const v of vehAll) {
+    const prevS = prevSById.get(v.id);
+    for (const d of detectors) {
+      if (crossedDetector(prevS, v.s, d.sDet, ringLengthM)) {
+        d.passTimes.push(tNow);
+        d.totalPasses += 1;
+        logPassage(tNow, d.label, v);
+      }
+    }
+  }
+
+  // local density/speed around detector
+  for (const d of detectors) {
+    const laneCnt = new Array(laneCount).fill(0);
+    const laneVsum = new Array(laneCount).fill(0);
+
+    for (const v of vehAll) {
+      const dist = circDist(v.s, d.sDet, ringLengthM);
+      if (dist <= DET_RANGE_M) {
+        laneCnt[v.lane] += 1;
+        laneVsum[v.lane] += v.v * 3.6;
+      }
+    }
+
+    const laneSpeedKmh = laneCnt.map((c, i) => c ? laneVsum[i] / c : null);
+    const segKm = (2 * DET_RANGE_M) / 1000;
+    const laneDensityVehKm = laneCnt.map(c => segKm > 0 ? (c / segKm) : 0);
+
+    const flowVehH = (d.passTimes.length / Math.max(1e-6, DET_WINDOW_SEC)) * 3600;
+
+    d.last = {
+      t: tNow,
+      flowVehH,
+      laneSpeedKmh,
+      laneDensityVehKm
+    };
+  }
+}
+
+
+function initLog() {
+  logData = {
+    meta: {
+      scenario: 'roundabout',
+      seed: seedValue,
+      createdAt: new Date().toISOString(),
+
+      // Simulation timing (actual dt varies with rAF; we cap it in the loop)
+      dtTarget: 0.04,
+      dtCap: 0.15,
+
+      logEverySec: LOG_EVERY_SEC,
+      trajEverySec: TRAJ_EVERY_SEC,
+
+      ring: { lengthM: ringLengthM, laneCount },
+      geometry: { innerRadiusM, laneWidthM, refRadiusM },
+
+      model: {
+        idm: { a: idm.a, b: idm.b, v0: idm.v0, T: idm.T, s0: idm.s0 },
+        mobil: { politeness: mobil.p, bSafe: mobil.bSafe, threshold: mobil.threshold, biasRight: mobil.bBiasRight }
+      },
+
+      jam: { vehSpeedThrKmh: JAM_V_KMH, binSpeedThrKmh: JAM_BIN_V_KMH, minLenM: JAM_MIN_LEN_M, minLenOffM: JAM_MIN_LEN_OFF_M, binMinCount: JAM_BIN_MIN_COUNT },
+
+      bins: { binSizeM: BIN_SIZE_M, nBins: nBinsRing },
+      detectors: {
+        rangeM: DET_RANGE_M,
+        windowSec: DET_WINDOW_SEC,
+        positionsS: detectors.map(d => ({ label: d.label, sDet: d.sDet }))
+      }
+    },
+
+    samples: [],
+    events: [],
+    passages: [],
+    traj: []
+  };
+
+  lastSampleT = -1e9;
+  lastTrajT = -1e9;
+}
+
+function logEvent(type, tNow, payload = {}) {
+  if (!logData || !logData.events) return;
+  logData.events.push({ t: tNow, type, ...payload });
+}
+
+function logPassage(tNow, detLabel, veh) {
+  // passages služe za N-curves / outflow / delay analize
+  // čuvamo minimalan skup polja da JSON ostane mali
+  if (!logData || !logData.passages) return;
+  logData.passages.push({
+    t: tNow,
+    det: detLabel,
+    id: veh.id,
+    lane: veh.lane,
+    s: veh.s,
+    vKmh: veh.v * 3.6
+  });
+}
+
+
+function logSample(tNow, vehAll) {
+  // global + bins + detectors + jam metrics
+  const global = computeGlobal(vehAll);
+  const bins = computeBinsRing(vehAll);
+  const detObj = {};
+  const detTotals = {};
+  for (const d of detectors) {
+    detObj[d.label] = d.last ? { ...d.last } : null;
+    detTotals[d.label] = d.totalPasses;
+  }
+  const jamVeh = computeJamMetrics(vehAll);
+  const jamBins = computeJamFromBins(bins);
+  const jam = {
+    present: jamVeh.present || jamBins.present,
+    // prefer longer jam length if both exist
+    jamLengthM: Math.max(jamVeh.jamLengthM || 0, jamBins.jamLengthM || 0),
+    jamStartS: (jamBins.present ? jamBins.jamStartS : jamVeh.jamStartS),
+    jamCenterS: (jamBins.present ? jamBins.jamCenterS : jamVeh.jamCenterS),
+    nSlow: jamVeh.nSlow || 0,
+    by: { veh: jamVeh, bins: jamBins }
+  };
+  const headways = computeHeadways(vehAll);
+
+  logData.samples.push({
+    t: tNow,
+    global,
+    jam,
+    headways,
+    detectors: detObj,
+    detectorTotals: detTotals,
+    bins
+  });
+  return jam;
+}
+
+function logTraj(tNow, vehAll) {
+  const ids = new Array(vehAll.length);
+  const s = new Array(vehAll.length);
+  const v = new Array(vehAll.length);
+  const lane = new Array(vehAll.length);
+
+  for (let i = 0; i < vehAll.length; i++) {
+    const vv = vehAll[i];
+    ids[i] = vv.id;
+    s[i] = vv.s;
+    v[i] = vv.v * 3.6; // km/h
+    lane[i] = vv.lane;
+  }
+
+  logData.traj.push({
+    t: tNow,
+    traj: { ids, s, vKmh: v, lane }
+  });
+}
+
+function updateLogInfo() {
+  const el = document.getElementById('logInfo');
+  if (!el || !logData) return;
+  const trajN = logData.traj ? logData.traj.length : 0;
+  el.textContent = `Samples: ${logData.samples.length} | Traj: ${trajN} | Events: ${logData.events.length} | Seed: ${seedValue}`;
+}
+
+function downloadLog() {
+  if (!logData) return;
+  const blob = new Blob([JSON.stringify(logData)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `phantomflow_roundabout_seed-${seedValue}_${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+function clearLog() {
+  initLog();
+  updateLogInfo();
+}
 
   // Skala za crtanje
   const outerRadiusM = innerRadiusM + laneWidthM * laneCount;
@@ -128,12 +683,16 @@ export function runRoundabout() {
 
     // heterogenost vozila
     hetero: {
-      truckFraction: 0.0,
-      v0Spread: 0.10,
-      truckV0Mult: 0.75,
-      truckLength: 12.0,
-      carLength: 7.5
+      truckFraction: 0.12,
+      v0Spread: 0.18,
+      truckV0Mult: 0.78,
+      truckLength: 7.5,
+      carLength: 4.5
     },
+
+    // stochastic acceleration noise (set 0 for reproducible stable flow until user brake pulse)
+    noiseAmp: 0.0,
+
 
     // phantom auto-pulse isključen (mi ručno triggerujemo)
     phantom: {
@@ -170,7 +729,7 @@ function buildVehicles(perLane) {
       `Početna gužva je očekivana.`
     );
   }
-
+/*
   for (let lane = 0; lane < laneCount; lane++) {
     // fazni pomak da se između traka ne formiraju "kolone" koje izazivaju agresivno prestrojavanje
     const phase = (lane / laneCount) * (0.7 * spacing);
@@ -179,11 +738,22 @@ function buildVehicles(perLane) {
       const s = (k * spacing + phase) % L;
 
       // Kreni blizu željene brzine, da ne "nabija" odmah u druge
-      const vInit = idm.v0 * 0.9 * (0.95 + 0.10 * Math.random());
+      const vInit = idm.v0 * 0.9 * (0.95 + 0.10 * rand01());
 
-      spawnVehicle(net, main, { id: idCounter.nextId++, lane, s, v: vInit });
+      const veh = spawnVehicle(net, main, { id: idCounter.nextId++, lane, s, v: vInit });
+      // za lane_change logovanje
+      veh.prevLane = lane;
     }
-  }
+  }*/
+
+        for (let lane = 0; lane < laneCount; lane++) {
+          for (let k = 0; k < n; k++) {
+            // mali offset po traci da se ne poklope baš svi
+            const s = (k / n) * L + lane * 0.5;
+            const vInit = idm.v0 * 0.55 * (0.9 + 0.2 * Math.random());
+            spawnVehicle(net, main, { id: idCounter.nextId++, lane, s, v: vInit });
+          }
+        }
 
   main.sortLanes();
 }
@@ -198,12 +768,14 @@ function buildVehicles(perLane) {
     for (let l = 0; l < laneCount; l++) vehs.push(...main.lanes[l]);
     if (vehs.length === 0) return;
 
-    const pick = vehs[(Math.random() * vehs.length) | 0];
-    const duration = 2.0 + 1.0 * Math.random();
-    const decel = -6.0 - 2.0 * Math.random(); // m/s^2
+    const pick = vehs[(rand01() * vehs.length) | 0];
+    const duration = 2.0 + 1.0 * rand01();
+    const decel = -6.0 - 2.0 * rand01(); // m/s^2
 
     pick.extraBrake = decel;
     pick.brakeUntil = net.time + duration;
+
+    return { id: pick.id, lane: pick.lane, s: pick.s, duration, decel };
   }
 
   // expose for debugging / manual calls
@@ -213,22 +785,25 @@ function buildVehicles(perLane) {
   // UI binding
   // ---------------------------
   if (countSlider) {
-    // osiguraj da startno imamo vozila (ako je slider 0 ili prazan)
-    const v0 = parseInt(countSlider.value, 10);
-    if (!Number.isFinite(v0) || v0 <= 0) countSlider.value = '20';
+    // Forsiraj početnu vrijednost sa HTML defaulta (sprječava Chrome restore na staru vrijednost)
+    const dvRaw = (countSlider.defaultValue || countSlider.getAttribute('value') || '20');
+    const dv = parseInt(dvRaw, 10);
+    countSlider.value = String(Number.isFinite(dv) && dv > 0 ? dv : 20);
     const updateLabel = () => { if (countValue) countValue.textContent = String(countSlider.value); };
     updateLabel();
 
     // Rebuild je ok jer nema inflow-a; ako želiš kasnije "smooth add/remove", možemo dodati.
     countSlider.addEventListener('input', () => {
       updateLabel();
-      buildVehicles(parseInt(countSlider.value, 10));
+      resetRng(); clearLog(); buildVehicles(parseInt(countSlider.value, 10));
     });
   }
 
   if (brakeBtn) {
     brakeBtn.addEventListener('click', () => {
-      maybeTriggerBreakPulse();
+      const info = maybeTriggerBreakPulse();
+      if (info) logEvent('brake_pulse', net.time, { ...info, trigger: 'user' });
+      updateLogInfo();
     });
   }
 
@@ -244,7 +819,7 @@ function buildVehicles(perLane) {
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
       const n = countSlider ? parseInt(countSlider.value, 10) : 20;
-      buildVehicles(n);
+      resetRng(); clearLog(); buildVehicles(n);
     });
   }
 
@@ -272,8 +847,8 @@ function buildVehicles(perLane) {
     setText(pValue, mobil.p.toFixed(2));
   });
   if (thrSlider) thrSlider.addEventListener('input', () => {
-    mobil.thr = parseFloat(thrSlider.value);
-    setText(thrValue, mobil.thr.toFixed(2));
+    mobil.bThr = parseFloat(thrSlider.value);
+    setText(thrValue, mobil.bThr.toFixed(2));
   });
 
   // init labels based on defaults (dispatch will run listeners if sliders exist)
@@ -283,12 +858,12 @@ function buildVehicles(perLane) {
   if (!aSlider)  { idm.a = 1.0; setText(aValue, '1.0 m/s²'); }
   if (!bSlider)  { idm.b = 2.5; setText(bValue, '2.5 m/s²'); }
   if (!pSlider)  { mobil.p = 0.2; setText(pValue, '0.20'); }
-  if (!thrSlider){ mobil.thr = 0.35; setText(thrValue, '0.35'); }
+  if (!thrSlider){ mobil.bThr = 0.35; setText(thrValue, '0.35'); }
 
   // Build initial
   const initialN = countSlider ? Math.max(0, parseInt(countSlider.value || '20', 10) || 0) : 20;
   if (countValue) countValue.textContent = String(initialN);
-  buildVehicles(initialN);
+  resetRng(); clearLog(); buildVehicles(initialN);
 
   // ---------------------------
   // Render
@@ -425,6 +1000,12 @@ function buildVehicles(perLane) {
   // ---------------------------
   // Loop
   // ---------------------------
+
+// helpers for logging detectors/events
+let prevSById = null;
+const hardBrakeState = new Map(); // id -> bool
+let jamPrevPresent = false;
+
   let lastTs = null;
 
   function loop(ts) {
@@ -434,10 +1015,66 @@ function buildVehicles(perLane) {
 
     if (running) {
       const dtSim = clamp(dtReal, 0, 0.15);
+
+// snapshot prethodne pozicije (za detektore / crossing)
+const vehAllBefore = main.allVehicles();
+prevSById = new Map();
+for (const v of vehAllBefore) prevSById.set(v.id, v.s);
       const h = 0.04; // substep
       const nSteps = Math.max(1, Math.ceil(dtSim / h));
       for (let i = 0; i < nSteps; i++) stepNetwork(net, idm, mobil, dtSim / nSteps);
     }
+
+
+// ---- logging & detectors ----
+const vehAll = main.allVehicles();
+
+// update detectors using prev positions captured before step
+if (prevSById) updateDetectors(net.time, vehAll, prevSById);
+
+// lane-change & hard-brake events
+for (const v of vehAll) {
+  if (v.prevLane !== undefined && v.prevLane !== null && v.prevLane !== v.lane) {
+    logEvent('lane_change', net.time, {
+      id: v.id,
+      from: v.prevLane,
+      to: v.lane,
+      s: v.s,
+      vKmh: v.v * 3.6
+    });
+    // prevent repeated logging
+    v.prevLane = v.lane;
+  }
+
+  const wasHard = hardBrakeState.get(v.id) === true;
+  const isHard = (v.acc <= -4.0);
+  if (!wasHard && isHard) {
+    logEvent('hard_brake', net.time, { id: v.id, lane: v.lane, s: v.s, acc: v.acc, vKmh: v.v * 3.6 });
+    hardBrakeState.set(v.id, true);
+  } else if (wasHard && !isHard) {
+    hardBrakeState.set(v.id, false);
+  }
+}
+
+
+// periodic samples (+ jam events w/ hysteresis)
+if ((net.time - lastSampleT) >= LOG_EVERY_SEC) {
+  const jamNow = logSample(net.time, vehAll);
+  const jamLen = (jamNow && typeof jamNow.jamLengthM === 'number') ? jamNow.jamLengthM : 0;
+  const jamPresentNow = jamPrevPresent ? (jamLen >= JAM_MIN_LEN_OFF_M) : (jamLen >= JAM_MIN_LEN_M);
+
+  if (!jamPrevPresent && jamPresentNow) logEvent('jam_on', net.time, jamNow);
+  if (jamPrevPresent && !jamPresentNow) logEvent('jam_off', net.time, jamNow);
+  jamPrevPresent = jamPresentNow;
+
+  lastSampleT = net.time;
+  updateLogInfo();
+}
+if ((net.time - lastTrajT) >= TRAJ_EVERY_SEC) {
+  logTraj(net.time, vehAll);
+  lastTrajT = net.time;
+  updateLogInfo();
+}
 
     drawRoad();
     drawVehicles();
