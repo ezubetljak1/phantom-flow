@@ -76,7 +76,7 @@ export function runRoundabout() {
   if (TSlider)  { TSlider.min = 0.8;  TSlider.max = 3.0;  TSlider.step = 0.1; }
   if (aSlider)  { aSlider.min = 0.3;  aSlider.max = 3.0;  aSlider.step = 0.1; }
   if (bSlider)  { bSlider.min = 0.5;  bSlider.max = 4.0;  bSlider.step = 0.1; }
-  if (pSlider)  { pSlider.min = -0.02;  pSlider.max = 1.0;  pSlider.step = 0.01; }
+  if (pSlider)  { pSlider.min = -0.4;  pSlider.max = 1.0;  pSlider.step = 0.01; }
   if (thrSlider){ thrSlider.min = 0.0;thrSlider.max = 1.0;thrSlider.step = 0.01; }
 
   // Default vrijednosti (možeš mijenjati)
@@ -729,7 +729,7 @@ function buildVehicles(perLane) {
       `Početna gužva je očekivana.`
     );
   }
-/*
+
   for (let lane = 0; lane < laneCount; lane++) {
     // fazni pomak da se između traka ne formiraju "kolone" koje izazivaju agresivno prestrojavanje
     const phase = (lane / laneCount) * (0.7 * spacing);
@@ -744,8 +744,8 @@ function buildVehicles(perLane) {
       // za lane_change logovanje
       veh.prevLane = lane;
     }
-  }*/
-
+  }
+/*
         for (let lane = 0; lane < laneCount; lane++) {
           for (let k = 0; k < n; k++) {
             // mali offset po traci da se ne poklope baš svi
@@ -754,7 +754,7 @@ function buildVehicles(perLane) {
             spawnVehicle(net, main, { id: idCounter.nextId++, lane, s, v: vInit });
           }
         }
-
+*/
   main.sortLanes();
 }
 
@@ -845,10 +845,12 @@ function buildVehicles(perLane) {
   if (pSlider) pSlider.addEventListener('input', () => {
     mobil.p = parseFloat(pSlider.value);
     setText(pValue, mobil.p.toFixed(2));
+     console.log(`[roundabout][UI] mobil.p = ${mobil.p}`);
   });
   if (thrSlider) thrSlider.addEventListener('input', () => {
     mobil.bThr = parseFloat(thrSlider.value);
     setText(thrValue, mobil.bThr.toFixed(2));
+    console.log(`[roundabout][UI] mobil.bThr = ${mobil.bThr}`);
   });
 
   // init labels based on defaults (dispatch will run listeners if sliders exist)
@@ -1008,6 +1010,12 @@ let jamPrevPresent = false;
 
   let lastTs = null;
 
+// ===== DEBUG: periodični ispis parametara =====
+let lastParamPrintT = -1e9;
+const PARAM_PRINT_EVERY_SEC = 2.0; // ispis svake 2 sekunde simulacije
+let lastLcCount = 0;
+
+
   function loop(ts) {
     if (lastTs === null) lastTs = ts;
     const dtReal = (ts - lastTs) / 1000;
@@ -1018,6 +1026,8 @@ let jamPrevPresent = false;
 
 // snapshot prethodne pozicije (za detektore / crossing)
 const vehAllBefore = main.allVehicles();
+
+
 prevSById = new Map();
 for (const v of vehAllBefore) prevSById.set(v.id, v.s);
       const h = 0.04; // substep
@@ -1028,6 +1038,35 @@ for (const v of vehAllBefore) prevSById.set(v.id, v.s);
 
 // ---- logging & detectors ----
 const vehAll = main.allVehicles();
+
+// ===== DEBUG: inicijalizuj prevLane ako nije postavljen (da lane-change log radi) =====
+for (const v of vehAll) {
+  if (v.prevLane === undefined || v.prevLane === null) v.prevLane = v.lane;
+}
+
+// ===== DEBUG: periodični ispis parametara + raspodjela po trakama + lane-change count =====
+if ((net.time - lastParamPrintT) >= PARAM_PRINT_EVERY_SEC) {
+  const laneCnt = new Array(laneCount).fill(0);
+  for (const v of vehAll) laneCnt[v.lane]++;
+
+  // koliko lane_change eventova imamo do sada (ako log radi)
+  const lcTotal = (logData && logData.events)
+    ? logData.events.filter(e => e.type === 'lane_change').length
+    : 0;
+
+  const lcDelta = lcTotal - lastLcCount;
+  lastLcCount = lcTotal;
+
+  console.log(
+    `[roundabout][t=${net.time.toFixed(1)}] ` +
+    `MOBIL{p=${mobil.p}, bThr=${mobil.bThr}, bSafe=${mobil.bSafe}, bBiasRight=${mobil.bBiasRight}} ` +
+    `IDM{v0=${(idm.v0*3.6).toFixed(1)}km/h, T=${idm.T}, a=${idm.a}, b=${idm.b}} ` +
+    `laneCnt=[${laneCnt.join(', ')}] ` +
+    `laneChange+${lcDelta}`
+  );
+
+  lastParamPrintT = net.time;
+}
 
 // update detectors using prev positions captured before step
 if (prevSById) updateDetectors(net.time, vehAll, prevSById);
