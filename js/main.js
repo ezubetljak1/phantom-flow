@@ -7,8 +7,23 @@ import {
   trySpawnRamp,
   defaultIdmParams,
   defaultMobilParams,
-  setRng
 } from './models.js';
+
+import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
+
+// ---------------------------
+// Scenario router (?scenario=main | roundabout)
+// Default: main (U-raskrsnica)
+// ---------------------------
+const __SCENARIO__ = new URLSearchParams(window.location.search).get('scenario') || 'main';
+
+if (__SCENARIO__ === 'roundabout') {
+  import('./roundabout.js')
+    .then(m => m.runRoundabout())
+    .catch(err => console.error('Failed to load roundabout scenario:', err));
+} else {
+
+  /*
 
 // ---------------------------
 // Seeded RNG (from URL ?seed=...)
@@ -49,6 +64,11 @@ setRng(rng);
 
 // helper for main.js random usage (same rng as models)
 let rand01 = () => rng();
+*/
+
+const rngCtl = initSeededRngFromUrl({defaultSeed: 12345});
+const seedValue = rngCtl.seedValue;
+const rand01 = rng01;
 
 // ---------------------------
 // Network config (kept same as before)
@@ -515,9 +535,10 @@ function initSim() {
   // recreate RNG so reset truly restarts deterministically for same seed
   clearLog();
 
-  rng = makeMulberry32(hashSeed(seedValue));
-  setRng(rng);
-  rand01 = () => rng();
+ // rng = makeMulberry32(hashSeed(seedValue));
+ // setRng(rng);
+ // rand01 = () => rng();
+  rngCtl.resetRng();
 
   // recreate network
   net = createNetwork(NET_CONFIG);
@@ -1252,3 +1273,5 @@ function drawDetectors() {
 
 initDetectors();
 requestAnimationFrame(loop);
+
+}

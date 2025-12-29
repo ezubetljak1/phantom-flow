@@ -6,23 +6,43 @@
 // - occasional brake pulse (phantom jams)
 // - keep hard no-overlap but less "stabilizing"
 
+
+// ===== MOBIL debug =====
+window.__MOBIL_DEBUG__ =  {
+  on: true,
+  every: 10,        // ispis svakih N poziva
+  maxPrint: 50,     // max ispisa
+  printed: 0,
+  seen: 0,
+  onlySafe: false   // true => ispisuj samo ako je safe
+};
+
+/*
 // -----------------------
 // Global RNG hook (seeded from main.js)
 // -----------------------
 let _rng = Math.random;
 
-/**
  * Set RNG function used by the simulation.
  * Expect a function that returns a float in [0,1).
  * If not set, defaults to Math.random.
- */
+ 
+
+
 export function setRng(fn) {
   _rng = (typeof fn === 'function') ? fn : Math.random;
 }
 
 function rand() {
   return _rng();
+}*/
+
+import { rng01 } from './utils/rng.js';
+
+function rand(){
+  return rng01();
 }
+
 
 function myTanh(x) {
   if (x > 50) return 1;
@@ -95,7 +115,7 @@ export const defaultMobilParams = {
   bSafeMax: 4.0,
   p: 0.1,
   bThr: 0.2,
-  bBiasRight: 0.0,
+  bBiasRight: 0.05,
   cooldown: 3.0
 };
 
@@ -122,8 +142,53 @@ function mobilEvaluateMove({
   const politeness = mobilParams.p;
   const bias = signRight * mobilParams.bBiasRight;
 
+//  const incentive =
+  //  (accNew - accOld) + politeness * (accLagNew - accLagOld) - mobilParams.bThr + bias;
   const incentive =
-    (accNew - accOld) + politeness * (accLagNew - accLagOld) - mobilParams.bThr + bias;
+  (accNew - accOld) + politeness * accLagNew - mobilParams.bThr + bias;
+
+
+
+// ===== MOBIL debug dump (works inside mobilEvaluateMove) =====
+const D = window.__MOBIL_DEBUG__;
+if (D?.on) {
+  D.seen++;
+
+  const shouldPrint =
+    (D.printed < D.maxPrint) &&
+    (D.seen % D.every === 0) &&
+    (!D.onlySafe || safe);
+
+  if (shouldPrint) {
+    D.printed++;
+
+    const dSelf = (accNew - accOld);
+    const dLag  = (accLagNew - accLagOld);
+
+    // "Treiber-like" varijanta (absolute penal za target follower-a)
+    // (bias i bThr su isti kao u tvom modelu)
+    const incentiveTreiberLike =
+      dSelf + politeness * (accLagNew) - mobilParams.bThr + bias;
+
+    // Tvoja varijanta (delta penal: kako si promijenio follower-a ukupno)
+    const incentiveYours =
+      dSelf + politeness * dLag - mobilParams.bThr + bias;
+
+    console.log(
+      `[MOBIL] id=${veh.id} toRight=${toRight} v=${(veh.v*3.6).toFixed(1)} ` +
+      `accOld=${accOld.toFixed(2)} accNew=${accNew.toFixed(2)} dSelf=${dSelf.toFixed(2)} ` +
+      `accLagOld=${accLagOld.toFixed(2)} accLagNew=${accLagNew.toFixed(2)} dLag=${dLag.toFixed(2)} ` +
+      `p=${politeness} bThr=${mobilParams.bThr} bias=${bias.toFixed(2)} bSafe=${bSafe.toFixed(2)} safe=${safe} ` +
+      `incentive=${incentive.toFixed(2)}`
+    );
+
+    console.log(
+      `  Treiber-like incentive: ${incentiveTreiberLike.toFixed(2)} | ` +
+      `Your incentive: ${incentiveYours.toFixed(2)}`
+    );
+  }
+}
+
 
   return { safe, incentive };
 }
@@ -272,7 +337,9 @@ export function createNetwork({
 // -----------------------
 // Neighbor helpers
 // -----------------------
-function findNeighborsAtS(laneVehiclesSorted, sQuery) {
+function findNeighborsAtS(laneVehiclesSorted, sQuery, road) {
+  // Returns immediate leader (ahead) and follower (behind) around sQuery in the given lane array.
+  // If road.isRing, this is wrap-around aware (leader/follower never null if lane non-empty).
   if (laneVehiclesSorted.length === 0) return { leader: null, follower: null };
 
   let lo = 0, hi = laneVehiclesSorted.length;
@@ -281,21 +348,43 @@ function findNeighborsAtS(laneVehiclesSorted, sQuery) {
     if (laneVehiclesSorted[mid].s < sQuery) lo = mid + 1;
     else hi = mid;
   }
-  const leader = lo < laneVehiclesSorted.length ? laneVehiclesSorted[lo] : null;
-  const follower = lo > 0 ? laneVehiclesSorted[lo - 1] : null;
+
+  const n = laneVehiclesSorted.length;
+  const isRing = !!(road && road.isRing);
+
+  let leader = (lo < n) ? laneVehiclesSorted[lo] : null;
+  let follower = (lo > 0) ? laneVehiclesSorted[lo - 1] : null;
+
+  if (isRing) {
+    if (!leader) leader = laneVehiclesSorted[0];
+    if (!follower) follower = laneVehiclesSorted[n - 1];
+  }
+
   return { leader, follower };
 }
 
-function findLeaderForVeh(laneVehiclesSorted, veh) {
+// forward distance along +s direction on a ring (0..L)
+function forwardDist(sFrom, sTo, L) {
+  let d = (sTo - sFrom) % L;
+  if (d < 0) d += L;
+  return d;
+}
+
+function findLeaderForVeh(laneVehiclesSorted, veh, road) {
   const idx = laneVehiclesSorted.indexOf(veh);
-  const leader = idx >= 0 && idx < laneVehiclesSorted.length - 1 ? laneVehiclesSorted[idx + 1] : null;
-  const follower = idx > 0 ? laneVehiclesSorted[idx - 1] : null;
+  const n = laneVehiclesSorted.length;
+  if (idx < 0 || n === 0) return { leader: null, follower: null };
+
+  const isRing = !!road?.isRing;
+  const leader = (idx < n - 1) ? laneVehiclesSorted[idx + 1] : (isRing && n > 1 ? laneVehiclesSorted[0] : null);
+  const follower = (idx > 0) ? laneVehiclesSorted[idx - 1] : (isRing && n > 1 ? laneVehiclesSorted[n - 1] : null);
   return { leader, follower };
 }
 
-function gapToLeader(veh, leader, idmParamsLocal) {
+function gapToLeader(veh, leader, idmParamsLocal, road) {
   if (!leader) return { s: 1e6, vLead: veh.v, aLead: 0 };
-  const dx = leader.s - veh.s;
+  let dx = leader.s - veh.s;
+  if (dx <= 0 && road?.isRing) dx += road.length; // wrap-around for ring roads
   const gap = Math.max(0.01, dx - veh.length);
   return { s: Math.max(gap, idmParamsLocal.s0), vLead: leader.v, aLead: leader.acc || 0 };
 }
@@ -317,8 +406,8 @@ function calcAccelerationsForRoad(road, idmParamsBase) {
     const laneVeh = road.lanes[l];
     for (const veh of laneVeh) {
       const idmLocal = localIdmParams(road, veh.s, idmParamsBase, veh);
-      const { leader } = findLeaderForVeh(laneVeh, veh);
-      const { s, vLead, aLead } = gapToLeader(veh, leader, idmLocal);
+      const { leader } = findLeaderForVeh(laneVeh, veh, road);
+      const { s, vLead, aLead } = gapToLeader(veh, leader, idmLocal, road);
       veh.acc = accACC(s, veh.v, vLead, aLead, idmLocal);
     }
   }
@@ -328,86 +417,153 @@ function calcAccelerationsForRoad(road, idmParamsBase) {
 // Lane change main
 // -----------------------
 function laneChangeMain(roadMain, netTime, idmParamsBase, mobilParams) {
+  // NOTE:
+  // The previous implementation evaluated lane changes in parallel (snapshot),
+  // then applied them all at once. This can create "conflicts" (multiple cars
+  // jumping into the same gap) which later gets corrected by the hard
+  // no-overlap enforcement -> looks like the lane-changing vehicle suddenly
+  // brakes hard "for no reason".
+  //
+  // Fix: apply lane changes SEQUENTIALLY from downstream to upstream (higher s
+  // to lower s), re-checking gaps against the CURRENT lane state before moving.
+
   roadMain.sortLanes();
-  const laneChanges = [];
 
+  const minSpacing = (idmParamsBase?.s0 ?? 4.0) + 0.8;
+
+  // Flatten & process in descending s to reduce conflicts
+  const all = [];
   for (let lane = 0; lane < roadMain.laneCount; lane++) {
-    const laneVeh = roadMain.lanes[lane];
+    for (const veh of roadMain.lanes[lane]) all.push(veh);
+  }
+  all.sort((a, b) => b.s - a.s);
 
-    for (const veh of laneVeh) {
-      if (netTime - veh.lastLaneChangeTime < mobilParams.cooldown) continue;
+  for (const veh of all) {
+    const lane = veh.lane;
 
-      // OLD lane
-      const idmLocalOld = localIdmParams(roadMain, veh.s, idmParamsBase, veh);
-      const { leader: leaderOld, follower: followerOld } = findLeaderForVeh(laneVeh, veh);
-      const { s: sOld, vLead: vLeadOld, aLead: aLeadOld } = gapToLeader(veh, leaderOld, idmLocalOld);
-      const accOld = accACC(sOld, veh.v, vLeadOld, aLeadOld, idmLocalOld);
+    // cooldown
+    if (netTime - veh.lastLaneChangeTime < mobilParams.cooldown) continue;
 
-      let accLagOld = 0;
-      if (followerOld) {
-        const idmLocalFolOld = localIdmParams(roadMain, followerOld.s, idmParamsBase, followerOld);
-        const { s: sLagOld, vLead, aLead } = gapFollowerAfterInsert(followerOld, veh, idmLocalFolOld);
-        accLagOld = accACC(sLagOld, followerOld.v, vLead, aLead, idmLocalFolOld);
-      }
+    const laneVeh = roadMain.lanes[lane]; // current lane (already sorted)
 
-      let bestLane = lane;
-      let bestIncentive = -1e9;
+    // If for some reason vehicle is not in the lane array anymore, skip
+    if (laneVeh.indexOf(veh) < 0) continue;
 
-      const candidates = [];
-      if (lane > 0) candidates.push(lane - 1);
-      if (lane < roadMain.laneCount - 1) candidates.push(lane + 1);
+    // OLD lane accel
+    const idmLocalOld = localIdmParams(roadMain, veh.s, idmParamsBase, veh);
+    const { leader: leaderOld, follower: followerOld } = findLeaderForVeh(laneVeh, veh);
+    const { s: sOld, vLead: vLeadOld, aLead: aLeadOld } = gapToLeader(veh, leaderOld, idmLocalOld);
+    const accOld = accACC(sOld, veh.v, vLeadOld, aLeadOld, idmLocalOld);
 
-      for (const targetLane of candidates) {
-        const targetVeh = roadMain.lanes[targetLane];
-        const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetVeh, veh.s);
+    let accLagOld = 0;
+    if (followerOld) {
+      const idmLocalFolOld = localIdmParams(roadMain, followerOld.s, idmParamsBase, followerOld);
+      const { s: sLagOld, vLead, aLead } = gapFollowerAfterInsert(followerOld, veh, idmLocalFolOld);
+      accLagOld = accACC(sLagOld, followerOld.v, vLead, aLead, idmLocalFolOld);
+    }
 
-        const idmLocalNew = localIdmParams(roadMain, veh.s, idmParamsBase, veh);
-        const { s: sNew, vLead: vLeadNew, aLead: aLeadNew } = gapToLeader(veh, leaderNew, idmLocalNew);
-        const accNew = accACC(sNew, veh.v, vLeadNew, aLeadNew, idmLocalNew);
+    // Candidate lanes
+    const candidates = [];
+    if (lane > 0) candidates.push(lane - 1);
+    if (lane < roadMain.laneCount - 1) candidates.push(lane + 1);
 
-        let accLagNew = 0;
+    let bestLane = lane;
+    let bestIncentive = -1e9;
+
+    for (const targetLane of candidates) {
+      const targetVeh = roadMain.lanes[targetLane]; // current target lane (sorted)
+
+      // Get current neighbors around our s
+      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetVeh, veh.s, roadMain);
+
+      // Hard geometric safety (avoid overlaps now, not later)
+      // For ring roads we MUST use wrap-around distances, otherwise a car near s≈0
+      // may be treated as having "negative gap" and then gets corrected by hard
+      // no-overlap enforcement -> looks like a random hard brake.
+      if (roadMain.isRing) {
+        const L = roadMain.length;
+        if (leaderNew) {
+          const dAhead = forwardDist(veh.s, leaderNew.s, L);
+          if (dAhead < (veh.length + minSpacing)) continue;
+        }
         if (followerNew) {
-          const idmLocalFolNew = localIdmParams(roadMain, followerNew.s, idmParamsBase, followerNew);
-          const { s: sLagNew, vLead, aLead } = gapFollowerAfterInsert(followerNew, veh, idmLocalFolNew);
-          accLagNew = accACC(sLagNew, followerNew.v, vLead, aLead, idmLocalFolNew);
+          const dBehind = forwardDist(followerNew.s, veh.s, L);
+          if (dBehind < (followerNew.length + minSpacing)) continue;
         }
-
-        const toRight = targetLane > lane;
-        const { safe, incentive } = mobilEvaluateMove({
-          veh,
-          accOld,
-          accNew,
-          accLagOld,
-          accLagNew,
-          toRight,
-          mobilParams,
-          idmParamsBase
-        });
-
-        if (safe && incentive > bestIncentive) {
-          bestIncentive = incentive;
-          bestLane = targetLane;
-        }
+      } else {
+        // s is REAR position, so:
+        // - leaderNew.s - veh.s >= veh.length + minSpacing
+        // - veh.s - followerNew.s >= followerNew.length + minSpacing
+        if (leaderNew && (leaderNew.s - veh.s) < (veh.length + minSpacing)) continue;
+        if (followerNew && (veh.s - followerNew.s) < (followerNew.length + minSpacing)) continue;
       }
 
-      if (bestLane !== lane && bestIncentive > 0) {
-        laneChanges.push({ veh, fromLane: lane, toLane: bestLane });
+      // New lane accel
+      const idmLocalNew = localIdmParams(roadMain, veh.s, idmParamsBase, veh);
+      const { s: sNew, vLead: vLeadNew, aLead: aLeadNew } = gapToLeader(veh, leaderNew, idmLocalNew);
+      const accNew = accACC(sNew, veh.v, vLeadNew, aLeadNew, idmLocalNew);
+
+      let accLagNew = 0;
+      if (followerNew) {
+        const idmLocalFolNew = localIdmParams(roadMain, followerNew.s, idmParamsBase, followerNew);
+        const { s: sLagNew, vLead, aLead } = gapFollowerAfterInsert(followerNew, veh, idmLocalFolNew);
+        accLagNew = accACC(sLagNew, followerNew.v, vLead, aLead, idmLocalFolNew);
+      }
+
+      const toRight = targetLane > lane;
+      const { safe, incentive } = mobilEvaluateMove({
+        veh,
+        accOld,
+        accNew,
+        accLagOld,
+        accLagNew,
+        toRight,
+        mobilParams,
+        idmParamsBase
+      });
+
+      if (safe && incentive > bestIncentive) {
+        bestIncentive = incentive;
+        bestLane = targetLane;
       }
     }
-  }
 
-  for (const ch of laneChanges) {
-    const veh = ch.veh;
-    const oldArr = roadMain.lanes[ch.fromLane];
-    const idx = oldArr.indexOf(veh);
-    if (idx >= 0) oldArr.splice(idx, 1);
+    if (bestLane !== lane && bestIncentive > 0) {
+      // Before moving, re-check gaps AGAIN (because earlier moves may have changed target lane)
+      const targetVeh = roadMain.lanes[bestLane];
+      const { leader: leaderNow, follower: followerNow } = findNeighborsAtS(targetVeh, veh.s, roadMain);
 
-    veh.prevLane = veh.lane;
-    veh.lane = ch.toLane;
-    veh.lastLaneChangeTime = netTime;
-    veh.laneChangeStartTime = netTime;
+      if (roadMain.isRing) {
+        const L = roadMain.length;
+        if (leaderNow) {
+          const dAhead = forwardDist(veh.s, leaderNow.s, L);
+          if (dAhead < (veh.length + minSpacing)) continue;
+        }
+        if (followerNow) {
+          const dBehind = forwardDist(followerNow.s, veh.s, L);
+          if (dBehind < (followerNow.length + minSpacing)) continue;
+        }
+      } else {
+        if (leaderNow && (leaderNow.s - veh.s) < (veh.length + minSpacing)) continue;
+        if (followerNow && (veh.s - followerNow.s) < (followerNow.length + minSpacing)) continue;
+      }
 
-    roadMain.lanes[ch.toLane].push(veh);
+      // Apply immediately (sequential)
+      const oldArr = roadMain.lanes[lane];
+      const idx = oldArr.indexOf(veh);
+      if (idx >= 0) oldArr.splice(idx, 1);
+
+      veh.prevLane = veh.lane;
+      veh.lane = bestLane;
+      veh.lastLaneChangeTime = netTime;
+      veh.laneChangeStartTime = netTime;
+
+      roadMain.lanes[bestLane].push(veh);
+
+      // Keep ordering consistent for subsequent evaluations
+      roadMain.lanes[lane].sort((a, b) => a.s - b.s);
+      roadMain.lanes[bestLane].sort((a, b) => a.s - b.s);
+    }
   }
 
   roadMain.sortLanes();
@@ -422,6 +578,7 @@ function mergeFromRamp(net, idmParamsBase, mobilParams) {
 
   ramp.sortLanes();
   main.sortLanes();
+  const road = main;
 
   const rampLane = ramp.lanes[0];
   const targetLaneIdx = net.merge.toLane;
@@ -442,14 +599,14 @@ function mergeFromRamp(net, idmParamsBase, mobilParams) {
       const alpha = tries === 1 ? 0.5 : k / (tries - 1);
       const candS = Math.max(0, mergeS - half + alpha * (2 * half));
 
-      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetLane, candS);
+      const { leader: leaderNew, follower: followerNew } = findNeighborsAtS(targetLane, candS, main);
 
       const oldS = veh.s;
       veh.s = candS;
 
       // evaluate ramp-vehicle accel on main
       const idmLocalAtCand = localIdmParams(main, candS, idmParamsBase, veh);
-      const { s: sNew, vLead: vLeadNew, aLead: aLeadNew } = gapToLeader(veh, leaderNew, idmLocalAtCand);
+      const { s: sNew, vLead: vLeadNew, aLead: aLeadNew } = gapToLeader(veh, leaderNew, idmLocalAtCand, road);
       const accNew = accACC(sNew, veh.v, vLeadNew, aLeadNew, idmLocalAtCand);
 
       // follower safety (RELAXED compared to before -> more jams)
@@ -537,7 +694,7 @@ function maybeTriggerBrakePulse(net) {
 // Integrate + enforce no-overlap
 // -----------------------
 function integrateAndEnforce(net, road, dt, idmParamsBase) {
-  const noiseAmp = 0.9;
+  const noiseAmp = (typeof net.noiseAmp === 'number') ? net.noiseAmp : 0.9;
 
   for (let l = 0; l < road.laneCount; l++) {
     for (const veh of road.lanes[l]) {
@@ -558,6 +715,7 @@ function integrateAndEnforce(net, road, dt, idmParamsBase) {
 
       veh.v = vNew;
       veh.s = sNew;
+      if (road.isRing) { veh.s = ((veh.s % road.length) + road.length) % road.length; }
       veh.acc = a;
     }
   }
@@ -598,6 +756,21 @@ function integrateAndEnforce(net, road, dt, idmParamsBase) {
         if (follower.s === prevS) follower.v = 0;
       }
     }
+    // Ring roads need an extra overlap check across the wrap-around (last -> first)
+    if (road.isRing && laneVeh.length > 1) {
+      const first = laneVeh[0];
+      const last = laneVeh[laneVeh.length - 1];
+      const virtualFirstS = first.s + road.length;
+      const desiredMaxS = virtualFirstS - last.length - minSpacing;
+      if (last.s > desiredMaxS) {
+        const prevS = (typeof last.prevS === 'number') ? last.prevS : last.s;
+        // Keep near the end of the ring (avoid wrapping to 0 by clamping)
+        last.s = Math.min(Math.max(desiredMaxS, prevS), road.length - 1e-3);
+        const vCap = Math.max(0, (last.s - prevS) / dt);
+        last.v = Math.min(last.v, first.v, vCap);
+        if (last.s === prevS) last.v = 0;
+      }
+    }
   }
 }
 
@@ -613,7 +786,7 @@ function randnApprox() {
 function canSpawnAt(road, lane, sSpawn, newLen, minGap) {
   road.sortLanes();
   const laneVeh = road.lanes[lane];
-  const { leader } = findNeighborsAtS(laneVeh, sSpawn);
+  const { leader } = findNeighborsAtS(laneVeh, sSpawn, road);
   if (!leader) return true;
   return (leader.s - sSpawn) >= (newLen + minGap);
 }
