@@ -10,8 +10,10 @@ import {
   stepNetwork,
   defaultIdmParams,
   defaultMobilParams,
-  setRng
 } from './models.js';
+
+import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
+
 
 let logData = null;
 let lastSampleT = -1e9;
@@ -102,7 +104,7 @@ export function runRoundabout() {
   const laneWidthM  = 5.8;   // širina trake (m)  (deblje trake)   // širina trake (m)  (deblje trake)
   const refRadiusM  = innerRadiusM + laneWidthM * (laneCount / 2); // referentni radijus za s
   const ringLengthM = 2 * Math.PI * refRadiusM;
-
+/*
 // ---------------------------
 // Seeded RNG (isto kao u main.js, iz URL ?seed=...)
 // ---------------------------
@@ -147,7 +149,16 @@ function resetRng() {
   rng = makeMulberry32(hashSeed(seedValue));
   setRng(rng);
   rand01 = () => rng();
+}*/
+
+const rngCtl = initSeededRngFromUrl({ defaultSeed: 12345 });
+const seedValue = rngCtl.seedValue;
+const rand01 = rng01;
+
+function resetRng() {
+  rngCtl.resetRng();
 }
+
 
 // ---------------------------
 // JSON logging (fokus: fantomska gužva / stop-and-go valovi)

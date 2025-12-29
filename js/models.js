@@ -17,24 +17,32 @@ window.__MOBIL_DEBUG__ =  {
   onlySafe: false   // true => ispisuj samo ako je safe
 };
 
-
+/*
 // -----------------------
 // Global RNG hook (seeded from main.js)
 // -----------------------
 let _rng = Math.random;
 
-/**
  * Set RNG function used by the simulation.
  * Expect a function that returns a float in [0,1).
  * If not set, defaults to Math.random.
- */
+ 
+
+
 export function setRng(fn) {
   _rng = (typeof fn === 'function') ? fn : Math.random;
 }
 
 function rand() {
   return _rng();
+}*/
+
+import { rng01 } from './utils/rng.js';
+
+function rand(){
+  return rng01();
 }
+
 
 function myTanh(x) {
   if (x > 50) return 1;
