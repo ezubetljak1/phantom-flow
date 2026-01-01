@@ -93,6 +93,8 @@
       <div class="row">
         <a class="btnLink" href="?scenario=main">U-raskrsnica</a>
         <a class="btnLink" href="?scenario=roundabout">Kružna</a>
+        <a class="btnLink" href="?scenario=treiber">Kružna (Treiber)</a>
+        
       </div>
     </div>
 
@@ -158,6 +160,42 @@
       </div>
     </div>
 
+   <!-- NEW: Treiber-like roundabout controls (only used when ?scenario=roundaboutTreiber) -->
+<div class="ctrl" id="treiberCtrl" style="display:none;">
+  <div class="row"><div><b>Prioritet</b></div><div class="val"></div></div>
+  <div class="row">
+    <select id="prioritySelect" style="width:100%;">
+      <option value="ring">Ring has priority</option>
+      <option value="entry">Entry has priority</option>
+    </select>
+  </div>
+
+  <div style="height:8px"></div>
+
+  <div class="row"><div><b>OD pravilo</b></div><div class="val"></div></div>
+  <div class="row">
+    <select id="odSelect" style="width:100%;">
+      <option value="all">All directions</option>
+      <option value="right">Right only</option>
+      <option value="straight">Straight only</option>
+      <option value="left">Left only</option>
+    </select>
+  </div>
+
+  <div style="height:10px"></div>
+
+  <div class="row"><div>Ukupni inflow</div><div class="val" id="treiberInflowValue">1800 veh/h</div></div>
+  <input id="treiberInflowSlider" type="range" min="0" max="6000" step="50" value="1800">
+
+  <div style="height:8px"></div>
+
+  <div class="row"><div>Udio N/S</div><div class="val" id="treiberShareValue">50%</div></div>
+  <input id="treiberShareSlider" type="range" min="0" max="100" step="1" value="50">
+
+  <div class="row" style="margin-top:8px;">
+    <button id="treiberBrakePulseBtn" type="button">Random kočenje</button>
+  </div>
+</div>
 
     <div class="ctrl">
   <div class="row"><div><b>Detektori</b> (prozor 30s)</div><div class="val"></div></div>
