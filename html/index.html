@@ -94,6 +94,8 @@
         <a class="btnLink" href="?scenario=main">U-raskrsnica</a>
         <a class="btnLink" href="?scenario=roundabout">Kružna</a>
         <a class="btnLink" href="?scenario=treiber">Kružna (Treiber)</a>
+        <a class="btnLink" href="?scenario=intersection">Raskrsnica</a>
+
         
       </div>
     </div>
@@ -141,12 +143,12 @@
       <input id="thrSlider" type="range" min="0" max="1" step="0.01">
     </div>
 
-    <div class="ctrl">
+    <div class="ctrl" id="mainInflowCtrl">
       <div class="row"><div>Main inflow</div><div class="val" id="mainInflowValue"></div></div>
       <input id="mainInflowSlider" type="range" min="0" max="9000" step="50">
     </div>
 
-    <div class="ctrl">
+    <div class="ctrl" id="rampInflowCtrl">
       <div class="row"><div>Ramp inflow</div><div class="val" id="rampInflowValue"></div></div>
       <input id="rampInflowSlider" type="range" min="0" max="4000" step="50">
     </div>
@@ -195,6 +197,38 @@
   <div class="row" style="margin-top:8px;">
     <button id="treiberBrakePulseBtn" type="button">Random kočenje</button>
   </div>
+
+  <!-- NEW: Intersection controls -->
+<div class="ctrl" id="intersectionCtrl" style="display:none;">
+  <div class="row"><div><b>Semafori</b></div><div class="val" id="tlModeValue">AUTO</div></div>
+
+  <div class="row"><div>Ukupni inflow</div><div class="val" id="interInflowValue">2400 veh/h</div></div>
+  <input id="interInflowSlider" type="range" min="0" max="6000" step="50" value="2400">
+
+  <div style="height:8px"></div>
+
+  <div class="row"><div>Udio N/S</div><div class="val" id="interShareValue">50%</div></div>
+  <input id="interShareSlider" type="range" min="0" max="100" step="1" value="50">
+
+  <div style="height:8px"></div>
+
+  <div class="row"><div>Režim</div><div class="val" id="tlPhaseValue">NS green</div></div>
+  <div class="row">
+    <button id="tlAutoBtn" type="button">AUTO</button>
+    <button id="tlNSBtn" type="button">NS zeleno</button>
+    <button id="tlEWBtn" type="button">EW zeleno</button>
+  </div>
+
+  <div class="row" style="margin-top:8px;">
+    <button id="interBrakePulseBtn" type="button">Random kočenje</button>
+    <span class="val" id="tlTimerValue" style="margin-left:auto;">t=0.0</span>
+  </div>
+
+  <div style="opacity:.75; margin-top:6px;">
+    Klik na semafor na platnu prebacuje režim u MANUAL.
+  </div>
+</div>
+
 </div>
 
     <div class="ctrl">
