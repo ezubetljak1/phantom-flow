@@ -203,7 +203,7 @@ export function runIntersection(canvasOverride) {
   }
 
   // Semafori
-  const cycle = { green: 28.0, yellow: 3.0, allRed: 1.0 };
+  const cycle = { green: 28.0, yellow: 3.0, redYellow: 1.5, allRed: 1.0 };
   let tlMode = 'auto';
   let phase = 'NS_GREEN';
   let phaseT = cycle.green;
@@ -217,6 +217,8 @@ export function runIntersection(canvasOverride) {
     if (phase === 'NS_YELLOW') return 'NS yellow';
     if (phase === 'EW_GREEN') return 'EW green';
     if (phase === 'EW_YELLOW') return 'EW yellow';
+    if (phase === 'NS_REDYELLOW') return 'NS red/yellow';
+    if (phase === 'EW_REDYELLOW') return 'EW red/yellow';
     return 'ALL red';
   }
 
@@ -248,9 +250,11 @@ export function runIntersection(canvasOverride) {
   updateTlUI();
 
   function isGreenForApproach(dir) {
-    if (phase.includes('YELLOW') || phase.startsWith('ALL')) return false;
-    if (dir === 'N' || dir === 'S') return phase === 'NS_GREEN';
-    return phase === 'EW_GREEN';
+    // Yellow is treated as "go" (same behavior as green) for vehicles.
+    // Red is only during ALL_RED phases.
+    if (phase.startsWith('ALL')) return false;
+    if (dir === 'N' || dir === 'S') return (phase === 'NS_GREEN' || phase === 'NS_YELLOW' || phase === 'NS_REDYELLOW');
+    return (phase === 'EW_GREEN' || phase === 'EW_YELLOW' || phase === 'EW_REDYELLOW');
   }
 
   // IDM sliders
@@ -283,6 +287,8 @@ export function runIntersection(canvasOverride) {
   const halfM = 18.0;
   const armLenM = 140.0;
   const stopOffsetM = 7.0;
+  // Visual/behavioral tweak: stop a bit BEFORE the line so cars don't creep into the intersection on red.
+  const stopAdvanceM = 2.0;
 
   const outerExtentM = halfM + armLenM + 20;
   const pxPerM_fit = (Math.min(W, H) * 0.5 - 40) / outerExtentM;
@@ -519,7 +525,7 @@ function opposingStraightIsClose(fromDir) {
   const isOppRight    = (leader.nextConnKey === oppRightKey);
   if (!isOppStraight && !isOppRight) return false;
 
-  const stopS = inRoads[opp].road.length - stopOffsetM;
+  const stopS = inRoads[opp].road.length - stopOffsetM - stopAdvanceM;
   const d = stopS - leader.s;
   const speed = Math.max(leader.v, 0.1);
   const tArr = d / speed;
@@ -570,7 +576,7 @@ function opposingStraightIsClose(fromDir) {
   function updateLightPositionsPx() {
     for (const L of lights) {
       const A = inRoads[L.approach];
-      const stopS = A.road.length - stopOffsetM;
+      const stopS = A.road.length - stopOffsetM - stopAdvanceM;
       const pStop = roadMap.get(A.road.id)(stopS);
       const side = rotCW(A.travelIn);
       const pSide = w2c(pStop.x + side.x * 2.5, pStop.y + side.y * 2.5);
@@ -779,9 +785,11 @@ function opposingStraightIsClose(fromDir) {
       if (phaseT <= 0) {
         if (phase === 'NS_GREEN') { phase = 'NS_YELLOW'; phaseT = cycle.yellow; }
         else if (phase === 'NS_YELLOW') { phase = 'ALL_RED_1'; phaseT = cycle.allRed; }
-        else if (phase === 'ALL_RED_1') { phase = 'EW_GREEN'; phaseT = cycle.green; }
+        else if (phase === 'ALL_RED_1') { phase = 'EW_REDYELLOW'; phaseT = cycle.redYellow; }
+        else if (phase === 'EW_REDYELLOW') { phase = 'EW_GREEN'; phaseT = cycle.green; }
         else if (phase === 'EW_GREEN') { phase = 'EW_YELLOW'; phaseT = cycle.yellow; }
         else if (phase === 'EW_YELLOW') { phase = 'ALL_RED_2'; phaseT = cycle.allRed; }
+        else if (phase === 'ALL_RED_2') { phase = 'NS_REDYELLOW'; phaseT = cycle.redYellow; }
         else { phase = 'NS_GREEN'; phaseT = cycle.green; }
         updateTlUI();
       }
@@ -798,11 +806,14 @@ function opposingStraightIsClose(fromDir) {
     // Incoming: block ONLY close to stopline (no early braking)
     for (const k of ['N','E','S','W']) {
       const A = inRoads[k];
-      const stopS = A.road.length - stopOffsetM;
+      const stopS = A.road.length - stopOffsetM - stopAdvanceM;
 
       const blockedFn = (veh) => {
-        // late stop behavior
-        if (veh.s < stopS - 20) return false;
+        // Start reacting to the stopline early enough to avoid creeping past it.
+        // Distance needed to comfortably stop from current speed.
+        const bEff = Math.max(1.5, idm.b);
+        const dNeed = Math.max(18, veh.v * 1.2 + (veh.v * veh.v) / (2 * bEff));
+        if (veh.s < stopS - dNeed) return false;
 
         if (!isGreenForApproach(k)) return true;
 
@@ -825,6 +836,22 @@ function opposingStraightIsClose(fromDir) {
 
     // Integrate
     for (const k of ['N','E','S','W']) integrateRoad(inRoads[k].road, dt);
+    // Prevent "creeping" into the intersection on red due to timestep discretization.
+    for (const k of ['N','E','S','W']) {
+      if (isGreenForApproach(k)) continue; // only when truly red (ALL phases)
+      const A = inRoads[k];
+      const stopS = A.road.length - stopOffsetM - stopAdvanceM;
+      const lane = A.road.lanes[0];
+      for (const veh of lane) {
+        // Only clamp vehicles that are right at the line (avoid stopping vehicles that already passed on green).
+        if (veh.s > stopS - 0.1 && veh.s < stopS + 1.0) {
+          veh.s = stopS - veh.length - 0.1;
+          veh.v = 0;
+          veh.acc = 0;
+        }
+      }
+    }
+
     for (const C of connectors.values()) integrateRoad(C.road, dt);
     for (const k of ['N','E','S','W']) integrateRoad(outRoads[k].road, dt);
 
@@ -958,7 +985,7 @@ function opposingStraightIsClose(fromDir) {
     ctx.lineWidth = 4;
     for (const k of ['N','E','S','W']) {
       const A = inRoads[k];
-      const stopS = A.road.length - stopOffsetM;
+      const stopS = A.road.length - stopOffsetM - stopAdvanceM;
       const pStop = roadMap.get(A.road.id)(stopS);
       const side = rotCW(A.travelIn);
       const a = w2c(pStop.x - side.x * 3.2, pStop.y - side.y * 3.2);
@@ -971,10 +998,20 @@ function opposingStraightIsClose(fromDir) {
     ctx.restore();
 
     for (const L of lights) {
-      const green = isGreenForApproach(L.approach);
+      // Visual: show yellow between green and red.
+      // Behavior: vehicles already treat YELLOW as "go" via isGreenForApproach().
+      let color = '#d50000';
+      if (!phase.startsWith('ALL')) {
+        if (L.group === 'NS' && (phase === 'NS_GREEN' || phase === 'NS_YELLOW' || phase === 'NS_REDYELLOW')) {
+          color = (phase === 'NS_GREEN') ? '#00c853' : '#ffeb3b';
+        } else if (L.group === 'EW' && (phase === 'EW_GREEN' || phase === 'EW_YELLOW' || phase === 'EW_REDYELLOW')) {
+          color = (phase === 'EW_GREEN') ? '#00c853' : '#ffeb3b';
+        }
+      }
+
       ctx.beginPath();
       ctx.arc(L.posPx.x, L.posPx.y, L.rPx, 0, 2 * Math.PI);
-      ctx.fillStyle = green ? '#00c853' : '#d50000';
+      ctx.fillStyle = color;
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#000';
