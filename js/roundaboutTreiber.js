@@ -10,6 +10,18 @@
 import { Road, spawnVehicle, defaultIdmParams } from './models.js';
 import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
 
+let usePerDirInflow = true; // <— uključi za D1
+
+// SIMULACIONI SLUCAJ D1
+// total: 1800 veh/h
+// D1-0 simetricno                        450 450 450 450
+// D1-1 jedan dominantni                  900 300 300 300
+// D1-2 dva dominantna susjeda            700 700 200 200
+// D1-3 NS dominantan ali asimetricno     350 700 350 400
+// D1-4 jaka asimetrija                   800 100 800 100
+
+let inflowByDir = { E: 800, N: 100, W: 800, S: 100 }; // veh/h (primjer)
+
 // ---------------------------
 // Small helpers
 // ---------------------------
@@ -638,6 +650,8 @@ const exitOff  = { x:  n.x * (sepM * 0.5), y:  n.y * (sepM * 0.5) };
         scenario: 'roundaboutTreiber',
         createdAt: new Date().toISOString(),
         seed: rngCtl.seedValue,
+        inflowByDir: { ...inflowByDir },
+        usePerDirInflow,
       },
       params: {
         idm: { ...idm },
@@ -897,9 +911,26 @@ function mapOut(exitIdx, s) {
     net.time += dt;
 
     // Inflow split NS vs EW
+//    const qNS = qInTotal * shareNS;
+ //   const qEW = qInTotal * (1 - shareNS);
+   // const qPerEntry = [qEW / 2, qNS / 2, qEW / 2, qNS / 2];
+
+
+   let qPerEntry;
+
+  if (usePerDirInflow) {
+  // indeksni redoslijed mora pratiti arms: [E,N,W,S]
+    qPerEntry = [
+      inflowByDir.E ?? 0,
+      inflowByDir.N ?? 0,
+      inflowByDir.W ?? 0,
+      inflowByDir.S ?? 0,
+    ];
+  } else {
     const qNS = qInTotal * shareNS;
     const qEW = qInTotal * (1 - shareNS);
-    const qPerEntry = [qEW / 2, qNS / 2, qEW / 2, qNS / 2];
+    qPerEntry = [qEW / 2, qNS / 2, qEW / 2, qNS / 2];
+  }
 
     for (let i = 0; i < 4; i++) trySpawnEntry(i, qPerEntry[i], dt);
 

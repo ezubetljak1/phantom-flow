@@ -25,6 +25,10 @@ if (__SCENARIO__ === 'roundabout') {
   import('./roundaboutTreiber.js')
     .then(m => m.runRoundaboutTreiber())
     .catch(err => console.error('Failed to load treiber roundabout scenario:', err));
+} else if (__SCENARIO__ === 'intersection') {
+  import('./intersection.js')
+    .then(m => m.runIntersection())
+    .catch(err => console.error('Failed to load intersection scenario:', err));
 } else {
 
   /*

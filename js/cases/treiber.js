@@ -1,5 +1,6 @@
-// ./js/cases/ring_phantomjam.js
-// http://127.0.0.1:5500/html/index.html?scenario=roundabout&case=ring_phantomjam&seed=111
+// ./js/cases/intersection_base.js
+// http://127.0.0.1:5500/html/index.html?scenario=treiber&case=treiber&seed=111
+
 function $(id) { return document.getElementById(id); }
 function setSlider(id, value) {
   const el = $(id); if (!el) throw new Error(`Missing #${id}`);
@@ -8,10 +9,8 @@ function setSlider(id, value) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 function click(id) { const el = $(id); if (!el) throw new Error(`Missing #${id}`); el.click(); }
-
 function readSamples() {
-  const t = $("logInfo")?.textContent || "";
-  const m = t.match(/Samples:\s*(\d+)/i);
+ const m = $("logInfo")?.textContent?.match(/samples\s*:\s*(\d+)\s*,?/i);
   return m ? Number(m[1]) : 0;
 }
 async function waitSamples(target, timeoutMs = 900000) {
@@ -23,16 +22,10 @@ async function waitSamples(target, timeoutMs = 900000) {
 }
 
 export async function runCase() {
-  setSlider("ringCountSlider", 30);
+  setSlider("v0Slider", 40);
+  setSlider("TSlider", 1.5);
 
-  setSlider("v0Slider", 80);
-
-  // sačekaj ~120 samples (0.5s) ≈ 60s, pa okini “random kočenje”
-  await waitSamples(60);
-  click("brakePulseBtn");
-
-  // ukupno ~1800 samples ≈ 15 min
-  await waitSamples(400);
+  await waitSamples(1000);
 
   click("pauseBtn");
   click("downloadLogBtn");
