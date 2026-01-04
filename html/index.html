@@ -45,7 +45,6 @@
     input[type="range"]{ width: 100%; }
     .val{ opacity: .85; min-width: 80px; text-align:right; font-variant-numeric: tabular-nums; }
 
-    /* NEW: buttons (minimal styling, matches existing dark UI) */
     button {
       background: #1a1a1a;
       color: #eee;
@@ -60,7 +59,6 @@
     button:active { transform: translateY(1px); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-
     a.btnLink{
       display:inline-block;
       padding:8px 10px;
@@ -74,7 +72,6 @@
     }
     a.btnLink:hover{ background:#222; }
 
-
     canvas {
       border: 1px solid #333;
       background: #000;
@@ -87,7 +84,7 @@
 
   <div id="controls">
 
-    <!-- NEW: Scenario switch -->
+    <!-- Scenario switch -->
     <div class="ctrl">
       <div class="row"><div>Scenario</div><div class="val" id="scenarioValue">U-raskrsnica</div></div>
       <div class="row">
@@ -95,13 +92,10 @@
         <a class="btnLink" href="?scenario=roundabout">Kružna</a>
         <a class="btnLink" href="?scenario=treiber">Kružna (Treiber)</a>
         <a class="btnLink" href="?scenario=intersection">Raskrsnica</a>
-
-        
       </div>
     </div>
 
-
-    <!-- NEW: Sim controls -->
+    <!-- Sim controls -->
     <div class="ctrl">
       <div class="row"><div>Sim</div><div class="val" id="simStatus">RUN</div></div>
       <div class="row">
@@ -153,7 +147,7 @@
       <input id="rampInflowSlider" type="range" min="0" max="4000" step="50">
     </div>
 
-    <!-- NEW: Roundabout controls (only used when ?scenario=roundabout) -->
+    <!-- Roundabout controls -->
     <div class="ctrl" id="ringCtrl">
       <div class="row"><div>Vozila / traka</div><div class="val" id="ringCountValue">20</div></div>
       <input id="ringCountSlider" type="range" min="0" max="80" step="1" value="20">
@@ -162,94 +156,140 @@
       </div>
     </div>
 
-   <!-- NEW: Treiber-like roundabout controls (only used when ?scenario=roundaboutTreiber) -->
-<div class="ctrl" id="treiberCtrl" style="display:none;">
-  <div class="row"><div><b>Prioritet</b></div><div class="val"></div></div>
-  <div class="row">
-    <select id="prioritySelect" style="width:100%;">
-      <option value="ring">Ring has priority</option>
-      <option value="entry">Entry has priority</option>
-    </select>
-  </div>
+    <!-- Treiber-like roundabout controls -->
+    <div class="ctrl" id="treiberCtrl" style="display:none;">
+      <div class="row"><div><b>Prioritet</b></div><div class="val"></div></div>
+      <div class="row">
+        <select id="prioritySelect" style="width:100%;">
+          <option value="ring">Ring has priority</option>
+          <option value="entry">Entry has priority</option>
+        </select>
+      </div>
 
-  <div style="height:8px"></div>
+      <div style="height:8px"></div>
 
-  <div class="row"><div><b>OD pravilo</b></div><div class="val"></div></div>
-  <div class="row">
-    <select id="odSelect" style="width:100%;">
-      <option value="all">All directions</option>
-      <option value="right">Right only</option>
-      <option value="straight">Straight only</option>
-      <option value="left">Left only</option>
-    </select>
-  </div>
+      <div class="row"><div><b>OD pravilo</b></div><div class="val"></div></div>
+      <div class="row">
+        <select id="odSelect" style="width:100%;">
+          <option value="all">All directions</option>
+          <option value="right">Right only</option>
+          <option value="straight">Straight only</option>
+          <option value="left">Left only</option>
+        </select>
+      </div>
 
-  <div style="height:10px"></div>
+      <div style="height:10px"></div>
 
-  <div class="row"><div>Ukupni inflow</div><div class="val" id="treiberInflowValue">1800 veh/h</div></div>
-  <input id="treiberInflowSlider" type="range" min="0" max="6000" step="50" value="1800">
+      <div class="row"><div>Ukupni inflow</div><div class="val" id="treiberInflowValue">1800 veh/h</div></div>
+      <input id="treiberInflowSlider" type="range" min="0" max="6000" step="50" value="1800">
 
-  <div style="height:8px"></div>
+      <div style="height:8px"></div>
 
-  <div class="row"><div>Udio N/S</div><div class="val" id="treiberShareValue">50%</div></div>
-  <input id="treiberShareSlider" type="range" min="0" max="100" step="1" value="50">
+      <div class="row"><div>Udio N/S</div><div class="val" id="treiberShareValue">50%</div></div>
+      <input id="treiberShareSlider" type="range" min="0" max="100" step="1" value="50">
 
-  <div class="row" style="margin-top:8px;">
-    <button id="treiberBrakePulseBtn" type="button">Random kočenje</button>
-  </div>
+      <div class="row" style="margin-top:8px;">
+        <button id="treiberBrakePulseBtn" type="button">Random kočenje</button>
+      </div>
+    </div>
 
-  <!-- NEW: Intersection controls -->
-<div class="ctrl" id="intersectionCtrl" style="display:none;">
-  <div class="row"><div><b>Semafori</b></div><div class="val" id="tlModeValue">AUTO</div></div>
+    <!-- Intersection controls (FIX: sibling, NOT inside treiberCtrl) -->
+    <div class="ctrl" id="intersectionCtrl" style="display:none;">
+      <div class="row"><div><b>Semafori</b></div><div class="val" id="tlModeValue">AUTO</div></div>
 
-  <div class="row"><div>Ukupni inflow</div><div class="val" id="interInflowValue">2400 veh/h</div></div>
-  <input id="interInflowSlider" type="range" min="0" max="6000" step="50" value="2400">
+      <!-- Simple inflow mode (existing) -->
+      <div class="row"><div>Ukupni inflow</div><div class="val" id="interInflowValue">2400 veh/h</div></div>
+      <input id="interInflowSlider" type="range" min="0" max="6000" step="50" value="2400">
 
-  <div style="height:8px"></div>
+      <div style="height:8px"></div>
 
-  <div class="row"><div>Udio N/S</div><div class="val" id="interShareValue">50%</div></div>
-  <input id="interShareSlider" type="range" min="0" max="100" step="1" value="50">
+      <div class="row"><div>Udio N/S</div><div class="val" id="interShareValue">50%</div></div>
+      <input id="interShareSlider" type="range" min="0" max="100" step="1" value="50">
 
-  <div style="height:8px"></div>
+      <div style="height:10px"></div>
 
-  <div class="row"><div>Režim</div><div class="val" id="tlPhaseValue">NS green</div></div>
-  <div class="row">
-    <button id="tlAutoBtn" type="button">AUTO</button>
-    <button id="tlNSBtn" type="button">NS zeleno</button>
-    <button id="tlEWBtn" type="button">EW zeleno</button>
-  </div>
+      <!-- NEW: Per-direction inflow toggle -->
+      <div class="row">
+        <div><b>Per-dir inflow</b></div>
+        <div class="val" style="min-width:auto;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input id="interPerDirToggle" type="checkbox" />
+            ON
+          </label>
+        </div>
+      </div>
 
-  <div class="row" style="margin-top:8px;">
-    <button id="interBrakePulseBtn" type="button">Random kočenje</button>
-    <span class="val" id="tlTimerValue" style="margin-left:auto;">t=0.0</span>
-  </div>
+      <!-- NEW: Per-direction inflow block -->
+      <div id="interPerDirBlock" style="display:none; margin-top:6px;">
+        <div class="row"><div>N inflow</div><div class="val" id="interInflowNValue">600 veh/h</div></div>
+        <input id="interInflowNSlider" type="range" min="0" max="6000" step="50" value="600">
 
-  <div style="opacity:.75; margin-top:6px;">
-    Klik na semafor na platnu prebacuje režim u MANUAL.
-  </div>
-</div>
+        <div class="row"><div>E inflow</div><div class="val" id="interInflowEValue">600 veh/h</div></div>
+        <input id="interInflowESlider" type="range" min="0" max="6000" step="50" value="600">
 
-</div>
+        <div class="row"><div>S inflow</div><div class="val" id="interInflowSValue">600 veh/h</div></div>
+        <input id="interInflowSSlider" type="range" min="0" max="6000" step="50" value="600">
+
+        <div class="row"><div>W inflow</div><div class="val" id="interInflowWValue">600 veh/h</div></div>
+        <input id="interInflowWSlider" type="range" min="0" max="6000" step="50" value="600">
+      </div>
+
+      <div style="height:10px"></div>
+
+      <!-- NEW: Turning ratios -->
+      <div class="row"><div><b>Skretanja</b></div><div class="val"></div></div>
+
+      <div class="row"><div>Right</div><div class="val" id="interTurnRightValue">18%</div></div>
+      <input id="interTurnRightSlider" type="range" min="0" max="60" step="1" value="18">
+
+      <div class="row"><div>Straight</div><div class="val" id="interTurnStraightValue">60%</div></div>
+      <input id="interTurnStraightSlider" type="range" min="0" max="100" step="1" value="60">
+
+      <div class="row" style="opacity:.85;">
+        <div>Left</div><div class="val" id="interTurnLeftValue">22%</div>
+      </div>
+      <div style="opacity:.7;">
+        Left se računa kao 100% - Right - Straight (automatski clamp ako pređe 100%).
+      </div>
+
+      <div style="height:10px"></div>
+
+      <div class="row"><div>Režim</div><div class="val" id="tlPhaseValue">NS green</div></div>
+      <div class="row">
+        <button id="tlAutoBtn" type="button">AUTO</button>
+        <button id="tlNSBtn" type="button">NS zeleno</button>
+        <button id="tlEWBtn" type="button">EW zeleno</button>
+      </div>
+
+      <div class="row" style="margin-top:8px;">
+        <button id="interBrakePulseBtn" type="button">Random kočenje</button>
+        <span class="val" id="tlTimerValue" style="margin-left:auto;">t=0.0</span>
+      </div>
+
+      <div style="opacity:.75; margin-top:6px;">
+        Klik na semafor na platnu prebacuje režim u MANUAL.
+      </div>
+    </div>
 
     <div class="ctrl">
-  <div class="row"><div><b>Detektori</b> (prozor 30s)</div><div class="val"></div></div>
+      <div class="row"><div><b>Detektori</b> (prozor 30s)</div><div class="val"></div></div>
 
-  <div class="row"><div id="det1Label">D1</div><div class="val" id="det1Flow">—</div></div>
-  <div class="row"><div>Brzina</div><div class="val" id="det1Speed">—</div></div>
-  <div class="row"><div>Gustina</div><div class="val" id="det1Density">—</div></div>
+      <div class="row"><div id="det1Label">D1</div><div class="val" id="det1Flow">—</div></div>
+      <div class="row"><div>Brzina</div><div class="val" id="det1Speed">—</div></div>
+      <div class="row"><div>Gustina</div><div class="val" id="det1Density">—</div></div>
 
-  <div style="height:8px"></div>
+      <div style="height:8px"></div>
 
-  <div class="row"><div id="det2Label">D2</div><div class="val" id="det2Flow">—</div></div>
-  <div class="row"><div>Brzina</div><div class="val" id="det2Speed">—</div></div>
-  <div class="row"><div>Gustina</div><div class="val" id="det2Density">—</div></div>
+      <div class="row"><div id="det2Label">D2</div><div class="val" id="det2Flow">—</div></div>
+      <div class="row"><div>Brzina</div><div class="val" id="det2Speed">—</div></div>
+      <div class="row"><div>Gustina</div><div class="val" id="det2Density">—</div></div>
 
-  <div style="height:8px"></div>
+      <div style="height:8px"></div>
 
-  <div class="row"><div id="det3Label">D3</div><div class="val" id="det3Flow">—</div></div>
-  <div class="row"><div>Brzina</div><div class="val" id="det3Speed">—</div></div>
-  <div class="row"><div>Gustina</div><div class="val" id="det3Density">—</div></div>
-</div>
+      <div class="row"><div id="det3Label">D3</div><div class="val" id="det3Flow">—</div></div>
+      <div class="row"><div>Brzina</div><div class="val" id="det3Speed">—</div></div>
+      <div class="row"><div>Gustina</div><div class="val" id="det3Density">—</div></div>
+    </div>
 
   </div>
 
@@ -258,6 +298,5 @@
   <!-- VAŽNO: putanja -->
   <script type="module" src="../js/main.js"></script>
   <script type="module" src="../js/cases/bootstrap.js"></script>
-
 </body>
 </html>

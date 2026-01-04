@@ -175,14 +175,239 @@ export function runIntersection(canvasOverride) {
 
   const idCounter = { nextId: 1 };
 
+  // -----------------------------
+  // JSON logger (for seminar analyses)
+  // -----------------------------
+  let logData = null;
+  let lastSampleT = -1e9;
+  const LOG_EVERY_SEC = 0.5; // sampling period
+
+  // Aggregates between samples
+  let exitedAgg = null; // { n, sumTravel, sumWait, byTo:{N,E,S,W} }
+
+  function startLog() {
+    lastSampleT = -1e9;
+    exitedAgg = { n: 0, sumTravel: 0, sumWait: 0, byTo: { N: 0, E: 0, S: 0, W: 0 } };
+
+    logData = {
+      meta: {
+        scenario: 'intersection',
+        createdAt: new Date().toISOString(),
+        seed: rngCtl?.seedValue ?? null,
+        idm: { ...idm },
+        cycle: { ...cycle },
+
+        // existing
+        inflowPerHour,
+        shareNS,
+
+        // NEW (optional)
+        usePerDirInflow,
+        inflowByDir: { ...inflowByDir },
+
+        // NEW turning ratios
+        turnPct: {
+          right: Math.round(turnRightP * 100),
+          straight: Math.round(turnStraightP * 100),
+          left: Math.round(turnLeftP * 100),
+        },
+
+        stopOffsetM,
+        stopAdvanceM,
+      },
+      samples: [],
+      events: []
+    };
+  }
+
+  function clearLog() { startLog(); }
+
+  function downloadLog() {
+    if (!logData) startLog();
+    // store latest UI params
+    logData.meta.inflowPerHour = inflowPerHour;
+    logData.meta.shareNS = shareNS;
+    logData.meta.usePerDirInflow = usePerDirInflow;
+    logData.meta.inflowByDir = { ...inflowByDir };
+    logData.meta.turnPct = {
+      right: Math.round(turnRightP * 100),
+      straight: Math.round(turnStraightP * 100),
+      left: Math.round(turnLeftP * 100),
+    };
+    logData.meta.cycle = { ...cycle };
+    logData.meta.idm = { ...idm };
+
+    const payload = JSON.stringify(logData, null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    const t = Math.round(net.time);
+    const seed = (rngCtl?.seedValue ?? 'na');
+    a.href = url;
+    a.download = `intersection_seed-${seed}_t-${t}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function computeApproachQueue(dirKey) {
+    const A = inRoads[dirKey];
+    if (!A) return { n: 0, lenM: 0, meanWait: 0, maxWait: 0 };
+
+    const stopS = A.road.length - stopOffsetM - stopAdvanceM;
+    const lane = A.road.lanes[0] || [];
+    const LOOKBACK = 120;   // meters upstream of stopline considered as "approach queue"
+    const V_STOP = 0.5;     // m/s threshold for "waiting"
+
+    const q = lane.filter(v => (stopS - v.s) >= -5 && (stopS - v.s) <= LOOKBACK && (v.v ?? 0) <= V_STOP);
+    if (q.length === 0) return { n: 0, lenM: 0, meanWait: 0, maxWait: 0 };
+
+    let minS = q[0].s;
+    let sumW = 0;
+    let maxW = 0;
+    for (const v of q) {
+      if (v.s < minS) minS = v.s;
+      const w = v.waitT ?? 0;
+      sumW += w;
+      if (w > maxW) maxW = w;
+    }
+
+    return {
+      n: q.length,
+      lenM: Math.max(0, stopS - minS),
+      meanWait: sumW / q.length,
+      maxWait: maxW
+    };
+  }
+
+  function logTick() {
+    if (!logData) startLog();
+
+    if (net.time - lastSampleT < LOG_EVERY_SEC) return;
+    lastSampleT = net.time;
+
+    const qN = computeApproachQueue('N');
+    const qE = computeApproachQueue('E');
+    const qS = computeApproachQueue('S');
+    const qW = computeApproachQueue('W');
+
+    const exited = exitedAgg || { n: 0, sumTravel: 0, sumWait: 0, byTo: { N: 0, E: 0, S: 0, W: 0 } };
+    const meanTravel = exited.n ? exited.sumTravel / exited.n : 0;
+    const meanWait = exited.n ? exited.sumWait / exited.n : 0;
+
+    logData.samples.push({
+      t: Number(net.time.toFixed(3)),
+      phase,
+      tlMode,
+
+      // existing
+      inflowPerHour,
+      shareNS,
+
+      // NEW
+      usePerDirInflow,
+      inflowByDir: { ...inflowByDir },
+      turnPct: {
+        right: Math.round(turnRightP * 100),
+        straight: Math.round(turnStraightP * 100),
+        left: Math.round(turnLeftP * 100),
+      },
+
+      queues: { N: qN, E: qE, S: qS, W: qW },
+      exited: {
+        n: exited.n,
+        meanTravel,
+        meanWait,
+        byTo: { ...exited.byTo }
+      }
+    });
+
+    const logInfo = document.getElementById('logInfo');
+    if (logInfo) logInfo.textContent = `log: ${logData.samples.length} samples`;
+
+    // reset between-sample aggregates
+    exitedAgg = { n: 0, sumTravel: 0, sumWait: 0, byTo: { N: 0, E: 0, S: 0, W: 0 } };
+  }
+
+  const downloadLogBtn = document.getElementById('downloadLogBtn');
+  if (downloadLogBtn) downloadLogBtn.onclick = downloadLog;
+
+  const clearLogBtn = document.getElementById('clearLogBtn');
+  if (clearLogBtn) clearLogBtn.onclick = clearLog;
+
   // UI
   let inflowPerHour = 2400;
   let shareNS = 0.50;
+
+  // NEW: per-direction inflow (optional mode)
+  let usePerDirInflow = false;
+  let inflowByDir = { N: 600, E: 600, S: 600, W: 600 };
+
+  // NEW: turning ratios (global)
+  let turnRightP = 0.18;
+  let turnStraightP = 0.60;
+  let turnLeftP = 1 - turnRightP - turnStraightP;
 
   const inflowSlider = document.getElementById('interInflowSlider');
   const inflowValue = document.getElementById('interInflowValue');
   const shareSlider = document.getElementById('interShareSlider');
   const shareValue = document.getElementById('interShareValue');
+
+  // NEW: per-dir controls
+  const perDirToggle = document.getElementById('interPerDirToggle');
+  const perDirBlock = document.getElementById('interPerDirBlock');
+
+  const inflowNSlider = document.getElementById('interInflowNSlider');
+  const inflowESlider = document.getElementById('interInflowESlider');
+  const inflowSSlider = document.getElementById('interInflowSSlider');
+  const inflowWSlider = document.getElementById('interInflowWSlider');
+
+  const inflowNValue = document.getElementById('interInflowNValue');
+  const inflowEValue = document.getElementById('interInflowEValue');
+  const inflowSValue = document.getElementById('interInflowSValue');
+  const inflowWValue = document.getElementById('interInflowWValue');
+
+  // NEW: turn sliders
+  const turnRightSlider = document.getElementById('interTurnRightSlider');
+  const turnStraightSlider = document.getElementById('interTurnStraightSlider');
+  const turnRightValue = document.getElementById('interTurnRightValue');
+  const turnStraightValue = document.getElementById('interTurnStraightValue');
+  const turnLeftValue = document.getElementById('interTurnLeftValue');
+
+  function updatePerDirUI() {
+    if (perDirBlock) perDirBlock.style.display = usePerDirInflow ? '' : 'none';
+
+    // disable simple controls when per-dir ON (minimal + avoids confusion)
+    if (inflowSlider) inflowSlider.disabled = usePerDirInflow;
+    if (shareSlider) shareSlider.disabled = usePerDirInflow;
+  }
+
+  function updateInflowDirValues() {
+    if (inflowNValue) inflowNValue.textContent = `${Math.round(inflowByDir.N)} veh/h`;
+    if (inflowEValue) inflowEValue.textContent = `${Math.round(inflowByDir.E)} veh/h`;
+    if (inflowSValue) inflowSValue.textContent = `${Math.round(inflowByDir.S)} veh/h`;
+    if (inflowWValue) inflowWValue.textContent = `${Math.round(inflowByDir.W)} veh/h`;
+  }
+
+  function updateTurnUI() {
+    // normalize/clamp so that Right+Straight <= 0.98 (avoid negative left)
+    let r = clamp(turnRightP, 0, 0.98);
+    let s = clamp(turnStraightP, 0, 0.98);
+    if (r + s > 0.98) {
+      const k = 0.98 / (r + s);
+      r *= k; s *= k;
+    }
+    turnRightP = r;
+    turnStraightP = s;
+    turnLeftP = Math.max(0, 1 - r - s);
+
+    if (turnRightValue) turnRightValue.textContent = `${Math.round(turnRightP * 100)}%`;
+    if (turnStraightValue) turnStraightValue.textContent = `${Math.round(turnStraightP * 100)}%`;
+    if (turnLeftValue) turnLeftValue.textContent = `${Math.round(turnLeftP * 100)}%`;
+  }
 
   if (inflowSlider) {
     inflowPerHour = Number(inflowSlider.value || 2400);
@@ -201,6 +426,45 @@ export function runIntersection(canvasOverride) {
     };
     if (shareValue) shareValue.textContent = `${Math.round(shareNS * 100)}%`;
   }
+
+  if (perDirToggle) {
+    perDirToggle.onchange = () => {
+      usePerDirInflow = !!perDirToggle.checked;
+      updatePerDirUI();
+    };
+  }
+
+  // init per-dir from sliders if present
+  if (inflowNSlider) inflowByDir.N = Number(inflowNSlider.value || inflowByDir.N);
+  if (inflowESlider) inflowByDir.E = Number(inflowESlider.value || inflowByDir.E);
+  if (inflowSSlider) inflowByDir.S = Number(inflowSSlider.value || inflowByDir.S);
+  if (inflowWSlider) inflowByDir.W = Number(inflowWSlider.value || inflowByDir.W);
+
+  if (inflowNSlider) inflowNSlider.oninput = () => { inflowByDir.N = Number(inflowNSlider.value || 0); updateInflowDirValues(); };
+  if (inflowESlider) inflowESlider.oninput = () => { inflowByDir.E = Number(inflowESlider.value || 0); updateInflowDirValues(); };
+  if (inflowSSlider) inflowSSlider.oninput = () => { inflowByDir.S = Number(inflowSSlider.value || 0); updateInflowDirValues(); };
+  if (inflowWSlider) inflowWSlider.oninput = () => { inflowByDir.W = Number(inflowWSlider.value || 0); updateInflowDirValues(); };
+
+  updateInflowDirValues();
+  updatePerDirUI();
+
+  // turning sliders init
+  if (turnRightSlider) turnRightP = Number(turnRightSlider.value || 18) / 100;
+  if (turnStraightSlider) turnStraightP = Number(turnStraightSlider.value || 60) / 100;
+
+  if (turnRightSlider) {
+    turnRightSlider.oninput = () => {
+      turnRightP = Number(turnRightSlider.value || 0) / 100;
+      updateTurnUI();
+    };
+  }
+  if (turnStraightSlider) {
+    turnStraightSlider.oninput = () => {
+      turnStraightP = Number(turnStraightSlider.value || 0) / 100;
+      updateTurnUI();
+    };
+  }
+  updateTurnUI();
 
   // Semafori
   const cycle = { green: 28.0, yellow: 3.0, redYellow: 1.5, allRed: 1.0 };
@@ -405,15 +669,6 @@ export function runIntersection(canvasOverride) {
   // ---------------------------
   // Conflict rules (MANUAL, not auto)
   // ---------------------------
-  // We only need to coordinate movements that can occur in the SAME green phase:
-  //  - NS phase: movements from N and S
-  //  - EW phase: movements from E and W
-  //
-  // Key idea:
-  //  - Opposite STRAIGHTS can go simultaneously (N->S with S->N, E->W with W->E)
-  //  - LEFT conflicts with anything "opposite direction" if they would overlap in center
-  //  - RIGHT generally non-conflicting inside same phase (keeps flow smooth)
-
   const conflicts = new Map(); // key -> [conflicting keys]
   for (const key of connectors.keys()) conflicts.set(key, []);
 
@@ -426,7 +681,6 @@ export function runIntersection(canvasOverride) {
   function key(from, to) { return `${from}->${to}`; }
 
   function buildPhaseConflicts(a, b) {
-    // a and b are opposite approaches in same phase (e.g., N & S)
     const aS = key(a, opposite(a));
     const bS = key(b, opposite(b));
     const aL = key(a, leftTurn(a));
@@ -434,28 +688,18 @@ export function runIntersection(canvasOverride) {
     const aR = key(a, rightTurn(a));
     const bR = key(b, rightTurn(b));
 
-    // LEFT conflicts with opposing STRAIGHT + opposing LEFT + (optionally) opposing RIGHT
     addConflict(aL, bS);
     addConflict(bL, aS);
     addConflict(aL, bL);
 
-    // (Optional but safer): left also conflicts with opposing right (depends on geometry)
     addConflict(aL, bR);
     addConflict(bL, aR);
-
-    // Straights don't conflict with each other (allow simultaneous)
-    // Rights assumed "mostly corner" -> no conflicts added.
   }
 
   buildPhaseConflicts('N', 'S');
   buildPhaseConflicts('E', 'W');
 
-  // ---------------------------
-  // Reservation / right-of-way gating:
-// - We keep it SIMPLE: no geometry collision detection.
-// - But we avoid "simultaneous start overlap" and still keep good throughput.
-//   * same movement: only a short headway (vehicles can follow each other)
-//   * conflicting movements: a short conflict lock (prevents overlap in the box)
+  // Reservation / right-of-way gating
   const conflictUntil = new Map(); // movementKey -> until time for CONFLICTS
   const nextSelfAt = new Map();    // movementKey -> earliest time next vehicle may enter (headway)
 
@@ -464,18 +708,16 @@ export function runIntersection(canvasOverride) {
       if (until <= t) conflictUntil.delete(k);
     }
     for (const [k, t0] of nextSelfAt.entries()) {
-      if (t0 <= t - 10) nextSelfAt.delete(k); // keep map small
+      if (t0 <= t - 10) nextSelfAt.delete(k);
     }
   }
 
   function canEnterMovement(key, t) {
     if (!key || !connectors.has(key)) return false;
 
-    // headway for same movement (so we don't serialize with a long lock)
     const selfAt = nextSelfAt.get(key) || 0;
     if (t < selfAt) return false;
 
-    // block only if a CONFLICTING movement is still in its conflict window
     for (const other of (conflicts.get(key) || [])) {
       const until = conflictUntil.get(other) || 0;
       if (until > t) return false;
@@ -487,8 +729,6 @@ export function runIntersection(canvasOverride) {
     const C = connectors.get(key);
     if (!C) return;
 
-    // Tuned to feel realistic (saturation headways) but still safe enough to avoid overlap.
-    // You can tweak these if you want the junction to be "more aggressive".
     const type = C.type; // 'S' | 'L' | 'R'
     const headway =
       (type === 'R') ? 0.80 :
@@ -504,43 +744,37 @@ export function runIntersection(canvasOverride) {
     conflictUntil.set(key, t + conflictDur);
   }
 
-  // ---------------------------
-  // Gap acceptance: LEFT yields to opposing STRAIGHT only if opposing straight is actually close
-  // ---------------------------
-function opposingStraightIsClose(fromDir) {
-  const opp = opposite(fromDir);
-  if (!isGreenForApproach(opp)) return false;
+  // Gap acceptance: LEFT yields only if opposing straight is close
+  function opposingStraightIsClose(fromDir) {
+    const opp = opposite(fromDir);
+    if (!isGreenForApproach(opp)) return false;
 
-  const lane = inRoads[opp].road.lanes[0];
-  if (!lane || lane.length === 0) return false;
+    const lane = inRoads[opp].road.lanes[0];
+    if (!lane || lane.length === 0) return false;
 
-  // leader only
-  let leader = lane[0];
-  for (const v of lane) if (v.s > leader.s) leader = v;
+    let leader = lane[0];
+    for (const v of lane) if (v.s > leader.s) leader = v;
 
-  const oppStraightKey = key(opp, opposite(opp));
-  const oppRightKey    = key(opp, rightTurn(opp));
+    const oppStraightKey = key(opp, opposite(opp));
+    const oppRightKey    = key(opp, rightTurn(opp));
 
-  const isOppStraight = (leader.nextConnKey === oppStraightKey);
-  const isOppRight    = (leader.nextConnKey === oppRightKey);
-  if (!isOppStraight && !isOppRight) return false;
+    const isOppStraight = (leader.nextConnKey === oppStraightKey);
+    const isOppRight    = (leader.nextConnKey === oppRightKey);
+    if (!isOppStraight && !isOppRight) return false;
 
-  const stopS = inRoads[opp].road.length - stopOffsetM - stopAdvanceM;
-  const d = stopS - leader.s;
-  const speed = Math.max(leader.v, 0.1);
-  const tArr = d / speed;
+    const stopS = inRoads[opp].road.length - stopOffsetM - stopAdvanceM;
+    const d = stopS - leader.s;
+    const speed = Math.max(leader.v, 0.1);
+    const tArr = d / speed;
 
-  // strožije za right da ne smanji protok bez potrebe
-  const D_CRIT = isOppRight ? 12.0 : 18.0;
-  const T_CRIT = isOppRight ? 1.2  : 1.7;
+    const D_CRIT = isOppRight ? 12.0 : 18.0;
+    const T_CRIT = isOppRight ? 1.2  : 1.7;
 
-  if (d < 0) return true;
-  if (d <= D_CRIT) return true;
-  if (tArr <= T_CRIT) return true;
-  return false;
-}
-
-
+    if (d < 0) return true;
+    if (d <= D_CRIT) return true;
+    if (tArr <= T_CRIT) return true;
+    return false;
+  }
 
   function isLeftKey(k) {
     const C = connectors.get(k);
@@ -552,20 +786,13 @@ function opposingStraightIsClose(fromDir) {
     if (!C || C.type !== 'L') return false;
 
     const from = C.from;
-
-    // Left yield only matters in the phase where BOTH approaches are green (same axis)
-    // For our 2-phase TL: if from is N or S, opposing is also green in NS_GREEN.
-    // Same for E/W in EW_GREEN.
     const opp = opposite(from);
     if (!isGreenForApproach(from) || !isGreenForApproach(opp)) return false;
 
-    // Yield only if opposing straight is close enough to matter
     return opposingStraightIsClose(from);
   }
 
-  // ---------------------------
   // Lights objects (clickable)
-  // ---------------------------
   const lights = [
     { approach: 'N', group: 'NS', posPx: { x: 0, y: 0 }, rPx: 10 },
     { approach: 'S', group: 'NS', posPx: { x: 0, y: 0 }, rPx: 10 },
@@ -647,9 +874,9 @@ function opposingStraightIsClose(fromDir) {
 
     inflowAcc = { N:0, E:0, S:0, W:0 };
     conflictUntil.clear();
-  nextSelfAt.clear();
+    nextSelfAt.clear();
 
-
+    startLog();
     setAuto();
   }
   if (resetBtn) resetBtn.onclick = resetSim;
@@ -657,8 +884,10 @@ function opposingStraightIsClose(fromDir) {
   // Spawning + routing
   function pickTurn(fromDir) {
     const r = rng01();
-    if (r < 0.18) return { to: rightTurn(fromDir) };
-    if (r < 0.78) return { to: opposite(fromDir) };
+
+    // NEW: driven by sliders (global ratios)
+    if (r < turnRightP) return { to: rightTurn(fromDir) };
+    if (r < (turnRightP + turnStraightP)) return { to: opposite(fromDir) };
     return { to: leftTurn(fromDir) };
   }
 
@@ -672,17 +901,26 @@ function opposingStraightIsClose(fromDir) {
   }
 
   function spawnApproach(dirKey, dt) {
-    const totalRatePerSec = inflowPerHour / 3600;
-    if (totalRatePerSec <= 0) return;
+    let ratePerSec = 0;
 
-    const rateNS = totalRatePerSec * shareNS;
-    const rateEW = totalRatePerSec * (1 - shareNS);
+    // NEW: per-direction mode overrides total/share
+    if (usePerDirInflow) {
+      const v = inflowByDir[dirKey] ?? 0;
+      ratePerSec = Math.max(0, v) / 3600;
+    } else {
+      const totalRatePerSec = inflowPerHour / 3600;
+      if (totalRatePerSec <= 0) return;
 
-    let rate = 0;
-    if (dirKey === 'N' || dirKey === 'S') rate = rateNS / 2;
-    else rate = rateEW / 2;
+      const rateNS = totalRatePerSec * shareNS;
+      const rateEW = totalRatePerSec * (1 - shareNS);
 
-    inflowAcc[dirKey] += rate * dt;
+      if (dirKey === 'N' || dirKey === 'S') ratePerSec = rateNS / 2;
+      else ratePerSec = rateEW / 2;
+    }
+
+    if (ratePerSec <= 0) return;
+
+    inflowAcc[dirKey] += ratePerSec * dt;
 
     const road = inRoads[dirKey].road;
     const sSpawn = 6;
@@ -701,6 +939,13 @@ function opposingStraightIsClose(fromDir) {
 
       const { to } = pickTurn(dirKey);
       veh.nextConnKey = `${dirKey}->${to}`;
+
+      // stats / logging
+      veh.spawnT = net.time;
+      veh.waitT = 0;
+      veh.fromDir = dirKey;
+      veh.toDir = to;
+      veh.exitT = null;
 
       inflowAcc[dirKey] -= 1.0;
     }
@@ -750,6 +995,20 @@ function opposingStraightIsClose(fromDir) {
     for (const veh of lane) {
       veh.v = Math.max(0, veh.v + veh.acc * dt);
       veh.s = veh.s + veh.v * dt;
+    }
+  }
+
+  function updateWaitTimes(dt) {
+    const V_STOP = 0.5; // m/s
+    const roads = [];
+    for (const k of ['N','E','S','W']) roads.push(inRoads[k].road, outRoads[k].road);
+    for (const C of connectors.values()) roads.push(C.road);
+
+    for (const R of roads) {
+      const lane = R.lanes[0] || [];
+      for (const veh of lane) {
+        if ((veh.v ?? 0) <= V_STOP) veh.waitT = (veh.waitT ?? 0) + dt;
+      }
     }
   }
 
@@ -809,8 +1068,6 @@ function opposingStraightIsClose(fromDir) {
       const stopS = A.road.length - stopOffsetM - stopAdvanceM;
 
       const blockedFn = (veh) => {
-        // Start reacting to the stopline early enough to avoid creeping past it.
-        // Distance needed to comfortably stop from current speed.
         const bEff = Math.max(1.5, idm.b);
         const dNeed = Math.max(18, veh.v * 1.2 + (veh.v * veh.v) / (2 * bEff));
         if (veh.s < stopS - dNeed) return false;
@@ -820,10 +1077,8 @@ function opposingStraightIsClose(fromDir) {
         const mKey = veh.nextConnKey;
         if (!mKey || !connectors.has(mKey)) return true;
 
-        // LEFT yield ONLY if opposing straight is close
         if (isLeftKey(mKey) && shouldLeftYieldNow(mKey)) return true;
 
-        // reservation conflicts (short)
         return !canEnterMovement(mKey, net.time);
       };
 
@@ -836,14 +1091,14 @@ function opposingStraightIsClose(fromDir) {
 
     // Integrate
     for (const k of ['N','E','S','W']) integrateRoad(inRoads[k].road, dt);
-    // Prevent "creeping" into the intersection on red due to timestep discretization.
+
+    // Prevent "creeping" into intersection on red due to timestep discretization.
     for (const k of ['N','E','S','W']) {
-      if (isGreenForApproach(k)) continue; // only when truly red (ALL phases)
+      if (isGreenForApproach(k)) continue;
       const A = inRoads[k];
       const stopS = A.road.length - stopOffsetM - stopAdvanceM;
       const lane = A.road.lanes[0];
       for (const veh of lane) {
-        // Only clamp vehicles that are right at the line (avoid stopping vehicles that already passed on green).
         if (veh.s > stopS - 0.1 && veh.s < stopS + 1.0) {
           veh.s = stopS - veh.length - 0.1;
           veh.v = 0;
@@ -859,6 +1114,8 @@ function opposingStraightIsClose(fromDir) {
     for (const k of ['N','E','S','W']) enforceNoOverlapOnRoad(inRoads[k].road);
     for (const C of connectors.values()) enforceNoOverlapOnRoad(C.road);
     for (const k of ['N','E','S','W']) enforceNoOverlapOnRoad(outRoads[k].road);
+
+    updateWaitTimes(dt);
 
     // Transfer: incoming -> connector
     for (const k of ['N','E','S','W']) {
@@ -877,7 +1134,6 @@ function opposingStraightIsClose(fromDir) {
             continue;
           }
 
-          // If left: apply gap acceptance right at entry too (prevents “jumping”)
           if (isLeftKey(mKey) && shouldLeftYieldNow(mKey)) {
             veh.s = A.length - 0.01;
             veh.v = 0;
@@ -908,7 +1164,39 @@ function opposingStraightIsClose(fromDir) {
       }
     }
 
-    // Despawn
+    // Despawn + log exit events
+    for (const k of ['N','E','S','W']) {
+      const R = outRoads[k].road;
+      const lane = R.lanes[0] || [];
+      for (const veh of lane) {
+        if (veh.exitT == null && veh.s >= R.length) {
+          veh.exitT = net.time;
+
+          const travelT = (veh.spawnT != null) ? (veh.exitT - veh.spawnT) : null;
+          const waitT = veh.waitT ?? null;
+
+          if (exitedAgg) {
+            exitedAgg.n += 1;
+            if (travelT != null) exitedAgg.sumTravel += travelT;
+            if (waitT != null) exitedAgg.sumWait += waitT;
+            if (veh.toDir && exitedAgg.byTo[veh.toDir] != null) exitedAgg.byTo[veh.toDir] += 1;
+          }
+
+          if (logData && veh.id != null) {
+            logData.events.push({
+              type: 'exit',
+              t: Number(net.time.toFixed(3)),
+              id: veh.id,
+              from: veh.fromDir ?? null,
+              to: veh.toDir ?? null,
+              travelT,
+              waitT
+            });
+          }
+        }
+      }
+    }
+
     const buffer = 80;
     for (const k of ['N','E','S','W']) {
       const R = outRoads[k].road;
@@ -998,8 +1286,6 @@ function opposingStraightIsClose(fromDir) {
     ctx.restore();
 
     for (const L of lights) {
-      // Visual: show yellow between green and red.
-      // Behavior: vehicles already treat YELLOW as "go" via isGreenForApproach().
       let color = '#d50000';
       if (!phase.startsWith('ALL')) {
         if (L.group === 'NS' && (phase === 'NS_GREEN' || phase === 'NS_YELLOW' || phase === 'NS_REDYELLOW')) {
@@ -1049,6 +1335,7 @@ function opposingStraightIsClose(fromDir) {
     lastTs = ts;
 
     if (running) step(dt);
+    if (running) logTick();
 
     if (tlTimerValue) tlTimerValue.textContent = `t=${net.time.toFixed(1)}`;
 
