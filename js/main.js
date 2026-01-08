@@ -12,17 +12,17 @@ import {
 import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
 
 // ---------------------------
-// Scenario router (?scenario=main | roundabout | treiber)
+// Scenario router (?scenario=main | ring | roundabout | intersection)
 // Default: main (U-raskrsnica)
 // ---------------------------
 const __SCENARIO__ = new URLSearchParams(window.location.search).get('scenario') || 'main';
 
-if (__SCENARIO__ === 'roundabout') {
-  import('./roundabout.js')
+if (__SCENARIO__ === 'ring') {
+  import('./ring.js')
     .then(m => m.runRoundabout())
     .catch(err => console.error('Failed to load roundabout scenario:', err));
-} else if (__SCENARIO__ === 'treiber') {
-  import('./roundaboutTreiber.js')
+} else if (__SCENARIO__ === 'roundabout') {
+  import('./roundabout.js')
     .then(m => m.runRoundaboutTreiber())
     .catch(err => console.error('Failed to load treiber roundabout scenario:', err));
 } else if (__SCENARIO__ === 'intersection') {

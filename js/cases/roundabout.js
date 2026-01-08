@@ -1,5 +1,5 @@
 // ./js/cases/intersection_base.js
-// http://127.0.0.1:5500/html/index.html?scenario=treiber&case=treiber&seed=111
+// http://127.0.0.1:5500/html/index.html?scenario=treiber&case=roundabout&seed=111
 
 function $(id) { return document.getElementById(id); }
 function setSlider(id, value) {
