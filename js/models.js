@@ -64,7 +64,7 @@ export const defaultIdmParams = {
   bmax: 10.0
 };
 
-function accACC(s, v, vl, al, params) {
+export function accACC(s, v, vl, al, params) {
   const { v0, T, s0, a, b, cool, bmax } = params;
 
   const v0eff = Math.max(v0, 1e-5);

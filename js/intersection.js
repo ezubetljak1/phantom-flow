@@ -7,7 +7,7 @@
 //  - Less over-blocking: manual conflict rules instead of auto geometry conflicts
 //  - Still uses short "reservation" so two conflicting flows don't overlap in center
 
-import { Road, spawnVehicle, defaultIdmParams } from './models.js';
+import { Road, spawnVehicle, defaultIdmParams, accACC } from './models.js';
 import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
 
 function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
@@ -19,34 +19,6 @@ function myTanh(x) {
   if (x < -50) return -1;
   const e2x = Math.exp(2 * x);
   return (e2x - 1) / (e2x + 1);
-}
-
-// ACC (IDM+CAH)
-function accACC(s, v, vl, al, params) {
-  const { v0, T, s0, a, b, cool, bmax } = params;
-
-  const v0eff = Math.max(v0, 1e-5);
-  const aeff = a;
-
-  const accFree = aeff * (1 - Math.pow(v / v0eff, 4));
-  const sStar = s0 + Math.max(0, v * T + (0.5 * v * (v - vl)) / Math.sqrt(Math.max(1e-6, aeff * b)));
-  const sEff = Math.max(s, s0);
-  const accInt = -aeff * Math.pow(sStar / sEff, 2);
-  const accIDM = Math.min(accFree, aeff + accInt);
-
-  // CAH
-  let accCAH;
-  if (vl * (v - vl) < -2 * s * al) {
-    accCAH = (v * v * al) / (vl * vl - 2 * s * al);
-  } else {
-    accCAH = al - ((v - vl) * (v - vl)) / (2 * Math.max(s, 0.01)) * (v > vl ? 1 : 0);
-  }
-  accCAH = Math.min(accCAH, aeff);
-
-  const accMix = (accIDM > accCAH) ? accIDM : accCAH + b * myTanh((accIDM - accCAH) / b);
-  const accACCval = cool * accMix + (1 - cool) * accIDM;
-
-  return Math.max(-bmax, accACCval);
 }
 
 function localIdmParamsForVeh(base, veh) {
