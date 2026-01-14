@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Phantom Flow – U-raskrsnica s rampom</title>
+  <title>Phantom Flow</title>
   <style>
     body {
       margin: 0;
@@ -79,8 +79,8 @@
   </style>
 </head>
 <body>
-  <h1>Phantom Flow – U-raskrsnica s rampom</h1>
-  <div id="info">IDM + MOBIL, 3 trake + ulazna rampa</div>
+  <h1>Mikrosimulacija saobraćajnog toka</h1>
+  <div id="info">Četiri različite geometrije</div>
 
   <div id="controls">
 
@@ -158,25 +158,6 @@
 
     <!-- Treiber-like roundabout controls -->
     <div class="ctrl" id="treiberCtrl" style="display:none;">
-      <div class="row"><div><b>Prioritet</b></div><div class="val"></div></div>
-      <div class="row">
-        <select id="prioritySelect" style="width:100%;">
-          <option value="ring">Ring has priority</option>
-          <option value="entry">Entry has priority</option>
-        </select>
-      </div>
-
-      <div style="height:8px"></div>
-
-      <div class="row"><div><b>OD pravilo</b></div><div class="val"></div></div>
-      <div class="row">
-        <select id="odSelect" style="width:100%;">
-          <option value="all">All directions</option>
-          <option value="right">Right only</option>
-          <option value="straight">Straight only</option>
-          <option value="left">Left only</option>
-        </select>
-      </div>
 
       <div style="height:10px"></div>
 
@@ -189,7 +170,6 @@
       <input id="treiberShareSlider" type="range" min="0" max="100" step="1" value="50">
 
       <div class="row" style="margin-top:8px;">
-        <button id="treiberBrakePulseBtn" type="button">Random kočenje</button>
       </div>
     </div>
 
@@ -262,7 +242,6 @@
       </div>
 
       <div class="row" style="margin-top:8px;">
-        <button id="interBrakePulseBtn" type="button">Random kočenje</button>
         <span class="val" id="tlTimerValue" style="margin-left:auto;">t=0.0</span>
       </div>
 

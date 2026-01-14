@@ -69,30 +69,6 @@ function localIdmParamsForVeh(base, veh) {
   return { ...base, v0: base.v0 * (veh?.v0Mult ?? 1.0) };
 }
 
-// ---------------------------
-// Bezier utilities for drawing + mapping
-// ---------------------------
-function cubicBezier(p0, p1, p2, p3, t) {
-  const u = 1 - t;
-  const tt = t * t;
-  const uu = u * u;
-  const uuu = uu * u;
-  const ttt = tt * t;
-  return {
-    x: uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x,
-    y: uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y,
-  };
-}
-
-function sampleCubic(p0, p1, p2, p3, stepCount) {
-  const pts = [];
-  for (let i = 0; i <= stepCount; i++) {
-    const t = i / stepCount;
-    pts.push(cubicBezier(p0, p1, p2, p3, t));
-  }
-  return pts;
-}
-
 function sampleStraight(A, B, stepM = 2.0) {
   const dx = B.x - A.x, dy = B.y - A.y;
   const L = Math.hypot(dx, dy);
@@ -136,12 +112,12 @@ export function runRoundaboutTreiber() {
 
   // Scenario label (if exists)
   const h1 = document.querySelector('h1');
-  if (h1) h1.textContent = 'Phantom Flow – Kružna raskrsnica (Treiber)';
   safeText('scenarioValue', 'Kružna (Treiber)');
 
   // Controls visibility: hide ringCtrl (old roundabout), show treiberCtrl if present
   showBlock('ringCtrl', false);
   showBlock('treiberCtrl', true);
+
 
   // Det labels (if exist)
   safeText('det1Label', 'Ring D1');

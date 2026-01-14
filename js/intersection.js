@@ -116,7 +116,6 @@ export function runIntersection(canvasOverride) {
   const H = canvas.height;
 
   const h1 = document.querySelector('h1');
-  if (h1) h1.textContent = 'Phantom Flow – Raskrsnica sa semaforima';
   safeText('scenarioValue', 'Raskrsnica');
 
   showBlock('ringCtrl', false);
