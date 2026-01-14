@@ -7,7 +7,7 @@
 // - Simple gap-acceptance merge at entries + exits by route (OD)
 // - Lightweight JSON logger (samples + events) with existing buttons (download/clear)
 
-import { Road, spawnVehicle, defaultIdmParams } from './models.js';
+import { Road, spawnVehicle, defaultIdmParams, accACC } from './models.js';
 import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
 
 let usePerDirInflow = true; // <— uključi za D1
@@ -65,69 +65,8 @@ function showBlock(id, show) {
 // ---------------------------
 // IDM + ACC (kept local to match models.js behaviour style-wise)
 // ---------------------------
-function myTanh(x) {
-  if (x > 50) return 1;
-  if (x < -50) return -1;
-  const e2x = Math.exp(2 * x);
-  return (e2x - 1) / (e2x + 1);
-}
-
-function accACC(s, v, vl, al, params) {
-  const { v0, T, s0, a, b, cool, bmax } = params;
-  const v0eff = Math.max(v0, 1e-5);
-  const aeff = a;
-
-  const accFree = aeff * (1 - Math.pow(v / v0eff, 4));
-
-  const sStar =
-    s0 + Math.max(0, v * T + (0.5 * v * (v - vl)) / Math.sqrt(Math.max(1e-6, aeff * b)));
-
-  const sEff = Math.max(s, s0);
-  const accInt = -aeff * Math.pow(sStar / sEff, 2);
-
-  const accIDM = Math.min(accFree, aeff + accInt);
-
-  // CAH
-  let accCAH;
-  if (vl * (v - vl) < -2 * s * al) {
-    accCAH = (v * v * al) / (vl * vl - 2 * s * al);
-  } else {
-    accCAH = al - ((v - vl) * (v - vl)) / (2 * Math.max(s, 0.01)) * (v > vl ? 1 : 0);
-  }
-  accCAH = Math.min(accCAH, aeff);
-
-  const accMix = (accIDM > accCAH) ? accIDM : accCAH + b * myTanh((accIDM - accCAH) / b);
-  const accACCval = cool * accMix + (1 - cool) * accIDM;
-
-  return Math.max(-bmax, accACCval);
-}
-
 function localIdmParamsForVeh(base, veh) {
   return { ...base, v0: base.v0 * (veh?.v0Mult ?? 1.0) };
-}
-
-// ---------------------------
-// Bezier utilities for drawing + mapping
-// ---------------------------
-function cubicBezier(p0, p1, p2, p3, t) {
-  const u = 1 - t;
-  const tt = t * t;
-  const uu = u * u;
-  const uuu = uu * u;
-  const ttt = tt * t;
-  return {
-    x: uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x,
-    y: uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y,
-  };
-}
-
-function sampleCubic(p0, p1, p2, p3, stepCount) {
-  const pts = [];
-  for (let i = 0; i <= stepCount; i++) {
-    const t = i / stepCount;
-    pts.push(cubicBezier(p0, p1, p2, p3, t));
-  }
-  return pts;
 }
 
 function sampleStraight(A, B, stepM = 2.0) {
@@ -173,12 +112,12 @@ export function runRoundaboutTreiber() {
 
   // Scenario label (if exists)
   const h1 = document.querySelector('h1');
-  if (h1) h1.textContent = 'Phantom Flow – Kružna raskrsnica (Treiber)';
   safeText('scenarioValue', 'Kružna (Treiber)');
 
   // Controls visibility: hide ringCtrl (old roundabout), show treiberCtrl if present
   showBlock('ringCtrl', false);
   showBlock('treiberCtrl', true);
+
 
   // Det labels (if exist)
   safeText('det1Label', 'Ring D1');

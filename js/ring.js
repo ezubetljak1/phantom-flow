@@ -19,15 +19,20 @@ let logData = null;
 let lastSampleT = -1e9;
 let lastTrajT = -1e9;
 
+function safeText(id, txt) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = txt;
+}
+
 export function runRoundabout() {
   const canvas = document.getElementById('simCanvas');
   const ctx = canvas.getContext('2d');
 
+  safeText('scenarioValue', 'Krug');
+
   // Update naslov / opis
   const h1 = document.querySelector('h1');
   const info = document.getElementById('info');
-  if (h1) h1.textContent = 'Phantom Flow – Kružna raskrsnica';
-  if (info) info.textContent = 'IDM + MOBIL, 3 trake, bez inflow-a (broj vozila po traci + random kočenje)';
 
   // Sakrij inflow kontrole i detektore (nisu bitni u ovom scenariju)
   const hideCtrlByChildId = (childId) => {

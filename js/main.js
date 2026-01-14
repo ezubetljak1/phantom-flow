@@ -17,6 +17,21 @@ import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
 // ---------------------------
 const __SCENARIO__ = new URLSearchParams(window.location.search).get('scenario') || 'main';
 
+function setCtrlVisible(id, visible) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.display = visible ? '' : 'none';
+}
+
+// sakrij/prikaži kontrole po scenariju
+setCtrlVisible('ringCtrl', __SCENARIO__ === 'ring');          // roundabout (ring) kontrole
+setCtrlVisible('mainInflowCtrl', __SCENARIO__ === 'main');    // main inflow
+setCtrlVisible('rampInflowCtrl', __SCENARIO__ === 'main');    // ramp inflow
+
+// (opciono, ali preporučeno da bude konzistentno)
+setCtrlVisible('treiberCtrl', __SCENARIO__ === 'roundabout');
+setCtrlVisible('intersectionCtrl', __SCENARIO__ === 'intersection');
+
 if (__SCENARIO__ === 'ring') {
   import('./ring.js')
     .then(m => m.runRoundabout())
