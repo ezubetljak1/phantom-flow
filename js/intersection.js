@@ -127,7 +127,7 @@ export function runIntersection(canvasOverride) {
   // RNG
   const rngCtl = initSeededRngFromUrl({ defaultSeed: 12345 });
 
-  // IDM base (make it feel alive)
+  // IDM base 
   const idm = { ...defaultIdmParams };
   idm.a = Math.max(idm.a, 1.6);
   idm.b = Math.max(idm.b, 2.2);
@@ -147,14 +147,13 @@ export function runIntersection(canvasOverride) {
   const idCounter = { nextId: 1 };
 
   // -----------------------------
-  // JSON logger (for seminar analyses)
+  // JSON logger
   // -----------------------------
   let logData = null;
   let lastSampleT = -1e9;
   const LOG_EVERY_SEC = 0.5; // sampling period
 
-  // Aggregates between samples
-  let exitedAgg = null; // { n, sumTravel, sumWait, byTo:{N,E,S,W} }
+  let exitedAgg = null;
 
   function startLog() {
     lastSampleT = -1e9;

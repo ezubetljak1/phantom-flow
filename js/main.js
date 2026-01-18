@@ -28,7 +28,6 @@ setCtrlVisible('ringCtrl', __SCENARIO__ === 'ring');          // roundabout (rin
 setCtrlVisible('mainInflowCtrl', __SCENARIO__ === 'main');    // main inflow
 setCtrlVisible('rampInflowCtrl', __SCENARIO__ === 'main');    // ramp inflow
 
-// (opciono, ali preporučeno da bude konzistentno)
 setCtrlVisible('treiberCtrl', __SCENARIO__ === 'roundabout');
 setCtrlVisible('intersectionCtrl', __SCENARIO__ === 'intersection');
 
@@ -206,7 +205,7 @@ function mapMainLane(s, laneIndex) {
     y = g.yTop;
   }
 
-  // tangentAngle logic from your old code preserved:
+  // tangentAngle logic
   let tangentAngle;
   if (s < L_bottom) tangentAngle = Math.PI;
   else if (s < L_bottom + L_curve) {
@@ -339,10 +338,7 @@ function drawBackground() {
   ctx.restore();
 }
 
-// inside drawBackground(), near the end:
-drawMergeMarker();
-
-    // detector markers
+  drawMergeMarker();
   drawDetectors();
 }
 
@@ -929,7 +925,7 @@ function detectorsUpdateUI() {
   }
 }
 // ---------------------------
-// JSON logging (for Python plotting + heatmaps)
+// JSON logging
 // ---------------------------
 const LOG_EVERY_SEC = 1.0;     // 1 Hz
 let lastLogT = -Infinity;

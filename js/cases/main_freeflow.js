@@ -53,6 +53,6 @@ export async function runCase() {
   // 600 samples ≈ 10 min (ako LOG_EVERY_SEC=1s)
   await waitSamples(610);
 
-  click("pauseBtn");       // zamrzni da ti vrijeme ne “bježi”
+  click("pauseBtn");       // zamrzni
   click("downloadLogBtn"); // skini JSON
 }

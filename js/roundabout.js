@@ -1,11 +1,5 @@
-// roundaboutTreiber.js
-// Treiber-like "proper" roundabout (ring + 4 approaches + 4 exits)
-// Implemented in the SAME style as main.js / roundabout.js in this repo:
-// - Canvas road rendering with grass + white edges + gray asphalt
-// - Vehicles drawn with the same speed-color dots + braking halo
-// - Uses the same Vehicle structure via spawnVehicle from models.js
-// - Simple gap-acceptance merge at entries + exits by route (OD)
-// - Lightweight JSON logger (samples + events) with existing buttons (download/clear)
+// roundabout.js
+
 
 import { Road, spawnVehicle, defaultIdmParams, accACC } from './models.js';
 import { initSeededRngFromUrl, rng01 } from './utils/rng.js';
@@ -131,7 +125,6 @@ export function runRoundaboutTreiber() {
   // Geometry (world meters) -> canvas pixels (like roundabout.js)
   // We design a "proper" roundabout: ring + separated entry/exit roads with curved connectors.
   // ---------------------------
-  // Thicker lanes (closer to Treiber look) and more separation between entry/exit.
   const laneWidthM = 5.8;
   const edgeWidthPx = 4;    // like main.js
 
@@ -184,7 +177,6 @@ const exitOff  = { x:  n.x * (sepM * 0.5), y:  n.y * (sepM * 0.5) };
  // entryOff = exitOff;
  // exitOff = temp;
 
-  // Ring entry/exit tačke ostaju “Treiber-like” (exit malo prije, entry malo poslije kraka)
   const exitTheta  = a.theta - alpha;
   const entryTheta = a.theta + alpha;
 
@@ -242,7 +234,6 @@ const exitOff  = { x:  n.x * (sepM * 0.5), y:  n.y * (sepM * 0.5) };
   if (bSlider)  bSlider.addEventListener('input',  () => { idm.b  = Number(bSlider.value); syncIdmUI(); });
   syncIdmUI();
 
-  // Treiber controls (optional)
   const prioritySelect = document.getElementById('prioritySelect'); // ring|entry
   const odSelect = document.getElementById('odSelect');            // all|right|straight|left
   const qInSlider = document.getElementById('treiberInflowSlider');
@@ -695,10 +686,7 @@ const exitOff  = { x:  n.x * (sepM * 0.5), y:  n.y * (sepM * 0.5) };
   }
   if (brakeBtn) brakeBtn.onclick = randomBrakePulse;
 
-  // ---------------------------
-  // Drawing (THIS is the part you asked for):
-  // Proper roundabout layout (Treiber-like) with the same "main.js" textures/colors.
-  // ---------------------------
+
   function speedColor(ratio) {
     if (ratio < 0.35) return '#d32f2f';
     if (ratio < 0.65) return '#fbc02d';

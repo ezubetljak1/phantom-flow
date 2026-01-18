@@ -1,4 +1,4 @@
-// roundabout.js
+// ring.js
 // 3-trake kružna raskrsnica (ring road) bez inflow-a
 // Kontrole:
 // - Slider "Vozila / traka" (ringCountSlider)
@@ -54,7 +54,6 @@ export function runRoundabout() {
   const countValue = document.getElementById('ringCountValue');
   const brakeBtn = document.getElementById('brakePulseBtn');
 
-  // Reuse postojećih slider-a ako želiš fino podešavanje IDM/MOBIL
   const v0Slider = document.getElementById('v0Slider');
   const TSlider  = document.getElementById('TSlider');
   const aSlider  = document.getElementById('aSlider');
@@ -86,7 +85,7 @@ export function runRoundabout() {
   if (pSlider)  { pSlider.min = -0.4;  pSlider.max = 1.0;  pSlider.step = 0.01; }
   if (thrSlider){ thrSlider.min = 0.0;thrSlider.max = 1.0;thrSlider.step = 0.01; }
 
-  // Default vrijednosti (možeš mijenjati)
+  // Default vrijednosti 
   setSlider(v0Slider, 110);
   setSlider(TSlider,  1.4);
   setSlider(aSlider,  1.0);
@@ -779,7 +778,6 @@ function buildVehicles(perLane) {
   // Manualni brake pulse
   // ---------------------------
   function maybeTriggerBreakPulse() {
-    // (namjerno zadržan naziv koji si naveo: Break)
     const vehs = [];
     for (let l = 0; l < laneCount; l++) vehs.push(...main.lanes[l]);
     if (vehs.length === 0) return;
@@ -808,7 +806,6 @@ function buildVehicles(perLane) {
     const updateLabel = () => { if (countValue) countValue.textContent = String(countSlider.value); };
     updateLabel();
 
-    // Rebuild je ok jer nema inflow-a; ako želiš kasnije "smooth add/remove", možemo dodati.
     countSlider.addEventListener('input', () => {
       updateLabel();
       resetRng(); clearLog(); buildVehicles(parseInt(countSlider.value, 10));
@@ -1112,7 +1109,7 @@ for (const v of vehAll) {
 }
 
 
-// periodic samples (+ jam events w/ hysteresis)
+// periodic samples 
 if ((net.time - lastSampleT) >= LOG_EVERY_SEC) {
   const jamNow = logSample(net.time, vehAll);
   const jamLen = (jamNow && typeof jamNow.jamLengthM === 'number') ? jamNow.jamLengthM : 0;

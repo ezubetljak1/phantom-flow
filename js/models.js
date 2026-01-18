@@ -1,10 +1,4 @@
 // models.js
-// MOVSIM-ish network + stronger jam dynamics:
-// - per-vehicle desired speed multiplier (heterogeneity)
-// - optional trucks (longer, slower)
-// - more aggressive merge (creates braking / shockwaves)
-// - occasional brake pulse (phantom jams)
-// - keep hard no-overlap but less "stabilizing"
 
 
 // ===== MOBIL debug =====
@@ -165,12 +159,9 @@ if (D?.on) {
     const dSelf = (accNew - accOld);
     const dLag  = (accLagNew - accLagOld);
 
-    // "Treiber-like" varijanta (absolute penal za target follower-a)
-    // (bias i bThr su isti kao u tvom modelu)
     const incentiveTreiberLike =
       dSelf + politeness * (accLagNew) - mobilParams.bThr + bias;
 
-    // Tvoja varijanta (delta penal: kako si promijenio follower-a ukupno)
     const incentiveYours =
       dSelf + politeness * dLag - mobilParams.bThr + bias;
 

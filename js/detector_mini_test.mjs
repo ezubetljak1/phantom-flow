@@ -130,14 +130,9 @@ function runOnce(seedStr) {
   const rng = makeMulberry32(hashSeed(seedStr));
   const rand01 = () => rng();
 
-  // If your models.js supports setRng, use it (so lane-changing randomness etc. is seeded too)
   if (typeof M.setRng === 'function') {
     M.setRng(rng);
   } else {
-    // Not fatal, but determinism may be weaker if models.js still uses Math.random internally.
-    // You said you already seed-replaced, so this should exist in your version.
-    // Keeping warning to help debug quickly.
-    // eslint-disable-next-line no-console
     console.warn('[WARN] models.js has no setRng(). If it still uses Math.random internally, results may vary run-to-run.');
   }
 
@@ -146,7 +141,6 @@ function runOnce(seedStr) {
     mainLaneCount: 3,
     rampLength: 125,
 
-    // you already tuned mergeMainS in main.js:
     mergeMainS: 267,
     mergeMainLane: 2,
     mergeTriggerRampS: 110,

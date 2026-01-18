@@ -3,11 +3,6 @@
 // -----------------------
 let _rng = Math.random;
 
-/**
- * Set RNG function used by the simulation.
- * Expect a function that returns a float in [0,1).
- * If not set, defaults to Math.random.
- */
 export function setRng(fn) {
   _rng = (typeof fn === 'function') ? fn : Math.random;
 }
@@ -79,7 +74,7 @@ export function initSeededRng(seedValue) {
   // držimo rngFn u varijabli da rand01() ostane ista referenca
   let rngFn = makeMulberry32(seedU32);
 
-  // “ušteka” RNG u simulaciju
+  // ubaci RNG u simulaciju
   setRng(rngFn);
 
   function rand01() {

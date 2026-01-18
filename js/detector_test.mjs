@@ -1,11 +1,10 @@
 // detector_test.mjs
-// Headless detector test for your traffic sim (Node).
 // Usage examples:
 //   node detector_test.mjs --seed demo --tEnd 120 --dt 0.05 --main 1800 --ramp 0
 //   node detector_test.mjs --seed demo --scenario single
 //   node detector_test.mjs --seed demo --tEnd 120 --dt 0.1  --main 1800 --ramp 0  (dt invariance check)
 
-// -------- import your sim core --------
+// -------- import sim core --------
 import {
   createNetwork,
   stepNetwork,
@@ -34,7 +33,7 @@ const rampInflowPerHour = Number(getArg('ramp', 0));
 const windowSec = Number(getArg('window', 30));
 const rangeM = Number(getArg('range', 20));
 
-// -------- seeded RNG (same as you used before) --------
+// -------- seeded RNG --------
 function hashSeed(seed) {
   if (seed == null) return 0x12345;
   if (Number.isFinite(seed)) return (seed >>> 0);
@@ -60,9 +59,8 @@ const rng = makeMulberry32(hashSeed(seedParam));
 setRng(rng);
 const rand01 = () => rng();
 
-// -------- network config (keep defaults unless you want to match main.js exactly) --------
+// -------- network config --------
 const NET_CONFIG = {
-  // keep your default-ish geometry
   mainLength: 920,
   mainLaneCount: 3,
   rampLength: 125,

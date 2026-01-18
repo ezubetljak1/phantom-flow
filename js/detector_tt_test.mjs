@@ -59,7 +59,7 @@ const rng = makeMulberry32(hashSeed(seedParam));
 setRng(rng);
 const rand01 = () => rng();
 
-// ---------- network (match your sim defaults) ----------
+// ---------- network  ----------
 const NET_CONFIG = {
   mainLength: 920,
   mainLaneCount: 3,
